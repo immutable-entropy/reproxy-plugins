@@ -1,0 +1,77 @@
+{
+  "name": "sensitive-info",
+  "version": "1.0-1",
+  "description": "Scans requests and responses for credentials, tokens, keys and personal data, and records each as a finding linked to the request it was seen in.",
+  "author": {
+    "name": "Kayleigh",
+    "email": null
+  },
+  "status": "disabled",
+  "sdk": "1",
+  "finding_types": [
+    { "id": "credential", "name": "Credential", "color": "#d9534f" },
+    { "id": "secret-key", "name": "Secret Key", "color": "#c2185b" },
+    { "id": "token", "name": "Token", "color": "#ef6c00" },
+    { "id": "personal-data", "name": "Personal Data", "color": "#6a1b9a" }
+  ],
+  "targets": [
+    {
+      "hook": "traffic.on_request_forwarded",
+      "function": "scanRequest",
+      "match": { "scope": "in_scope" }
+    },
+    {
+      "hook": "traffic.on_response_received",
+      "function": "scanResponse",
+      "match": {
+        "scope": "in_scope",
+        "content_types": [
+          "text/*",
+          "application/json",
+          "application/*+json",
+          "application/javascript",
+          "application/x-javascript",
+          "application/xml",
+          "application/*+xml",
+          "application/x-www-form-urlencoded",
+          "application/graphql*"
+        ]
+      }
+    }
+  ],
+  "settings": [
+    {
+      "key": "detectors",
+      "type": "list",
+      "label": "Detectors",
+      "description": "Which detectors run: password, username, basic_auth, bearer, jwt, aws_key, github_token, slack_token, stripe_key, google_api_key, private_key, api_key, email.",
+      "default": ["password", "username", "basic_auth", "bearer", "jwt", "aws_key", "github_token", "slack_token", "stripe_key", "google_api_key", "private_key", "api_key", "email"]
+    },
+    {
+      "key": "scan_requests",
+      "type": "boolean",
+      "label": "Scan requests",
+      "description": "Off: only responses are scanned.",
+      "default": true
+    },
+    {
+      "key": "min_entropy",
+      "type": "number",
+      "label": "Minimum entropy for generic keys",
+      "description": "An api_key-style assignment is only flagged when its value is at least this random (bits per character).",
+      "default": 3.5
+    },
+    {
+      "key": "max_body_kb",
+      "type": "number",
+      "label": "Largest body scanned (KiB)",
+      "default": 512
+    },
+    {
+      "key": "ignore_emails",
+      "type": "list",
+      "label": "Email domains to ignore",
+      "default": ["example.com", "example.org", "example.net", "sentry.io", "w3.org"]
+    }
+  ]
+}

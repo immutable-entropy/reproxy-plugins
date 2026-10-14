@@ -1,0 +1,65 @@
+{
+  "name": "wordpress",
+  "version": "1.0-1",
+  "description": "Recognises WordPress sites and records what they give away about themselves — the core version, the plugins and themes installed, the REST namespaces plugins register and the user accounts exposed — as findings. It reads the Map, not the traffic: it runs when an endpoint is put there, and it never sends a request of its own.",
+  "author": {
+    "name": "reProxy"
+  },
+  "status": "enabled",
+  "sdk": "1",
+  "finding_types": [
+    { "id": "wordpress", "name": "WordPress", "color": "#21759b" },
+    { "id": "wordpress-plugin", "name": "WordPress Plugin", "color": "#00838f" },
+    { "id": "wordpress-theme", "name": "WordPress Theme", "color": "#6a1b9a" },
+    { "id": "wordpress-user", "name": "WordPress User", "color": "#ef6c00" }
+  ],
+  "targets": [
+    {
+      "hook": "plugin.on_load",
+      "function": "init"
+    },
+    {
+      "hook": "endpoint.on_discovered",
+      "function": "onEndpoint",
+      "match": { "scope": "in_scope" }
+    },
+    {
+      "hook": "endpoint.on_updated",
+      "function": "onEndpoint",
+      "match": {
+        "scope": "in_scope",
+        "paths": [
+          "/wp-json",
+          "/wp-json/*",
+          "/wp-sitemap*",
+          "/author/*",
+          "/feed",
+          "/feed/*"
+        ]
+      }
+    }
+  ],
+  "settings": [
+    {
+      "key": "read_pages",
+      "type": "boolean",
+      "label": "Read the responses the Map was built from",
+      "description": "On: the plugin reads the page an endpoint was discovered in, and the responses served from it, for versions and REST data. Off: only the endpoints' own paths are read.",
+      "default": true
+    },
+    {
+      "key": "record_users",
+      "type": "boolean",
+      "label": "Record the user accounts a site exposes",
+      "description": "Author archives, the REST users route and oEmbed replies name accounts without being asked.",
+      "default": true
+    },
+    {
+      "key": "record_rest_namespaces",
+      "type": "boolean",
+      "label": "Record REST API namespaces",
+      "description": "A namespace core doesn't register is a plugin's footprint, even when that plugin serves no assets.",
+      "default": true
+    }
+  ]
+}

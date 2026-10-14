@@ -1,0 +1,54 @@
+{
+  "name": "endpoint-mapper",
+  "version": "1.0-1",
+  "description": "Finds URLs in HTML, JSON, JavaScript, robots.txt, sitemaps and OpenAPI documents, and puts the ones belonging to your targets on the Map, including on other hosts the target covers.",
+  "author": {
+    "name": "Kayleigh",
+    "email": null
+  },
+  "status": "disabled",
+  "sdk": "1",
+  "targets": [
+    {
+      "hook": "traffic.on_response_received",
+      "function": "mapResponse",
+      "match": {
+        "scope": "in_scope",
+        "status": ["2xx"],
+        "content_types": [
+          "text/html",
+          "application/xhtml+xml",
+          "application/json",
+          "application/*+json",
+          "application/javascript",
+          "application/x-javascript",
+          "text/javascript",
+          "application/xml",
+          "text/xml",
+          "text/plain"
+        ]
+      }
+    }
+  ],
+  "settings": [
+    {
+      "key": "include_out_of_scope",
+      "type": "boolean",
+      "label": "Map URLs outside the targets",
+      "description": "Off: only URLs a target covers (or, with no targets, on the same site) are mapped.",
+      "default": false
+    },
+    {
+      "key": "max_links_per_response",
+      "type": "number",
+      "label": "Most URLs taken from one response",
+      "default": 500
+    },
+    {
+      "key": "openapi",
+      "type": "boolean",
+      "label": "Read OpenAPI and Swagger documents",
+      "default": true
+    }
+  ]
+}

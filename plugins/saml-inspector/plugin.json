@@ -1,0 +1,24 @@
+{
+  "name": "saml-inspector",
+  "version": "1.0-1",
+  "description": "Decodes SAML authentication exchanges (SAMLRequest, SAMLResponse, assertions) and flags sensitive information a tester should review: NameIDs, attributes carrying personal data, session indices, unsigned assertions, long-lived conditions and embedded secrets.",
+  "author": { "name": "reProxy" },
+  "status": "disabled",
+  "sdk": "1",
+  "finding_types": [
+    { "id": "saml-assertion", "name": "SAML Assertion", "color": "#1565c0" },
+    { "id": "saml-subject", "name": "SAML Subject", "color": "#6a1b9a" },
+    { "id": "saml-attribute", "name": "SAML Attribute", "color": "#00838f" },
+    { "id": "saml-weakness", "name": "SAML Weakness", "color": "#d9534f" }
+  ],
+  "targets": [
+    { "hook": "traffic.on_request_forwarded", "function": "scanRequest", "match": { "scope": "in_scope" } },
+    { "hook": "traffic.on_response_received", "function": "scanResponse", "match": { "scope": "in_scope", "content_types": ["text/html", "application/json", "application/*+json", "application/xml", "text/xml", "application/soap+xml"] } }
+  ],
+  "settings": [
+    { "key": "flag_attributes", "type": "boolean", "label": "Flag personal-data attributes", "default": true },
+    { "key": "flag_weaknesses", "type": "boolean", "label": "Flag assertion weaknesses", "description": "Unsigned assertions, long-lived conditions, bearer subjects without recipient restriction.", "default": true },
+    { "key": "max_assertion_age_hours", "type": "number", "label": "Condition window to flag as long-lived (hours)", "default": 12 },
+    { "key": "sensitive_attributes", "type": "list", "label": "Attribute names to always flag", "default": ["password", "ssn", "socialsecurity", "creditcard", "secret", "token", "apikey", "privatekey", "dateofbirth", "dob"] }
+  ]
+}
