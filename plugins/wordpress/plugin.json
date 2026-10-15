@@ -1,7 +1,7 @@
 {
   "name": "wordpress",
-  "version": "1.0-1",
-  "description": "Recognises WordPress sites and records what they give away about themselves — the core version, the plugins and themes installed, the REST namespaces plugins register and the user accounts exposed — as findings. It reads the Map, not the traffic: it runs when an endpoint is put there, and it never sends a request of its own.",
+  "version": "1.1",
+  "description": "Recognises WordPress sites and records what they give away about themselves — the core version, the plugins and themes installed, the REST namespaces plugins register and the user accounts exposed — as findings. It reads the Map, not the traffic, and is passive by default. Turn on active version scanning and it will also request the readme.txt / style.css of a plugin or theme whose version the traffic never stated, the way wpscan pins a version down.",
   "author": {
     "name": "reProxy"
   },
@@ -60,6 +60,13 @@
       "label": "Record REST API namespaces",
       "description": "A namespace core doesn't register is a plugin's footprint, even when that plugin serves no assets.",
       "default": true
+    },
+    {
+      "key": "active_version_scan",
+      "type": "boolean",
+      "label": "Actively request a plugin's or theme's version",
+      "description": "Off: the plugin stays passive and reports only what the traffic carried. On: when a plugin or theme is found whose version the traffic never stated, it requests that part's readme.txt (plugins) or style.css (themes) to read the version, the way wpscan does. These requests go to the site, so this is active testing; they are kept to the hosts your targets cover and shown in the Traffic list.",
+      "default": false
     }
   ]
 }

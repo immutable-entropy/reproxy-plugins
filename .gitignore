@@ -1,0 +1,3 @@
+# Written by `reproxy plugin types` for an editor; not part of a plugin.
+.reproxy/
+tsconfig.json

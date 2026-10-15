@@ -1,0 +1,283 @@
+# reproxy-plugins: guidance for Claude sessions
+
+This repository holds the plugins for **reProxy**, an intercepting proxy for
+testing web apps (the app is `github.com/immutable-entropy/reproxy`,
+checked out in the devcontainer at `/workspaces/reproxy`). Every plugin
+reProxy runs comes from a repository like this one: **nothing is bundled
+into the app**. This is the default repository the app's Plugins window
+browses, so a plugin merged here is one any user can install.
+
+`README.md` is the full reference for plugin authors (manifest fields, every
+hook, match filters, the SDK, the test harness). This file is the working
+guide: how plugins fit into reProxy, the rules a plugin must keep, and the
+workflow for writing one. When the two disagree, the SDK and manifest code
+in the app are the truth (see "Where the truth is" below). Fix whichever
+document is wrong.
+
+## How a plugin reaches a user
+
+1. The user opens the **Plugins** window (the puzzle piece above the cog in
+   reProxy's navigation bar) and, under **Repositories**, browses this
+   repo.
+2. reProxy lists every directory holding a `plugin.json` (at the repo root,
+   in a top-level directory, or under `src/` or `plugins/`; here it's
+   `plugins/<name>/`).
+3. Installing downloads only `.ts`, `.js`, `.mjs`, `.cjs`, `.json`, `.md`
+   and `.txt` files. It skips `*.test.ts`, anything under a `test/`
+   directory, and `node_modules/`. The limits are 200 files, 2 MiB per file
+   and 16 MiB in total. The download is validated (the manifest parses,
+   every function a target names is exported) and copied into the user's
+   data directory (`~/.reproxy/plugins/<name>/`).
+4. It is installed **disabled**, whatever `status` says, so downloaded code
+   never runs until the user has looked at it and enabled it. `status` only
+   decides the default for a plugin put in the folder by hand.
+
+So a plugin must work from its downloaded files alone. Anything it needs at
+run time is a `.ts`/`.js`/`.json` file inside its own directory.
+
+## Repository layout
+
+```
+README.md                  the authoring reference (keep it current)
+CLAUDE.md                  this file
+plugins/
+  <name>/                  one directory per plugin; the name equals plugin.json's "name"
+    plugin.json            the manifest
+    main.ts                the entry point; exports every function plugin.json names
+    src/*.ts               the logic, as plain functions that can be unit-tested
+    test/*.test.ts         tests, run by `reproxy plugin test`; never installed
+```
+
+The current plugins are good models. Read the closest one before writing a
+new one:
+
+| Plugin | Shows how to |
+|---|---|
+| `wordpress` | watch the **Map** (`endpoint.*` hooks) instead of traffic, read the flows behind an endpoint, keep per-run state that `plugin.on_load` resets, and record findings that merge |
+| `sensitive-info` | scan request and response bodies with `text.scan` (RE2 in Go), use tight `content_types` filters, use list, number and boolean settings, and redact values |
+| `saml-inspector` | decode a protocol (base64 + DEFLATE + XML) in pure TypeScript and grade what it finds |
+
+## Core or plugin?
+
+reProxy's core (Go) is intercepting, editing and replaying traffic, and
+every request pays for core code, so core stays small and fast. Everything
+else, especially automated QA and security testing, is meant to be built
+**as plugins**. If a feature could be done by watching traffic, the Map or
+findings, or by answering held messages, it belongs here. If it truly can't
+be done without a new hook or SDK function, that's a change to the app
+(`/workspaces/reproxy`, `internal/plugin`). Make it there first, keep the
+SDK and README in step, and say so plainly.
+
+Finding endpoints, hosts and domains in traffic is core, not a plugin: the
+app reads every response for the URLs it refers to, puts them on the Map,
+and lists hosts no target covers under Targets → Related. Don't write a
+plugin that re-extracts links; use `endpoint.*` hooks to act on what core
+found.
+
+## The rules a plugin must keep
+
+These follow from how core runs plugins. A plugin that breaks them costs
+every user's traffic, or gets stopped.
+
+- **Filter in `match`, not in code.** `match` runs in Go before anything
+  reaches the plugin. An event it turns away costs nothing; one it accepts
+  is copied onto the plugin's queue (1024 events, then dropped and counted).
+  Always set `scope` (usually `"in_scope"`) and narrow by `content_types`,
+  `paths`, `hosts`, `methods` or `status` wherever the plugin only cares
+  about some traffic. A body scanner without a `content_types` filter runs
+  on every image and font.
+- **Prefer observe hooks.** `traffic.*`, `endpoint.*`, `finding.*` and the
+  rest are asynchronous: they never slow the traffic. Only the intercept
+  hooks (`intercept.on_request_pending`, `intercept.on_response_pending`,
+  `websocket.on_message_pending`) make the proxy wait, and only for what
+  interception (or the plugin's own `hold`) holds. Use them only to change
+  or drop traffic.
+- **`hold: true` is expensive.** It makes the proxy buffer and wait on every
+  message `match` accepts, even with interception off. Use it only for
+  rewriting plugins (header injectors, response rewriters), with the
+  tightest `match` that works, and answer fast: the default timeout is 2 s,
+  and a timeout counts as a pass.
+- **Watch the Map rather than the traffic when you can.** The Map has one
+  row per endpoint, so `endpoint.on_discovered` runs once per new thing
+  seen, not once per request (see `wordpress`). Narrow `endpoint.on_updated`
+  with `paths`, because it fires on every new hit.
+- **Stay passive by default.** A plugin that only reads what the traffic
+  already carried can be enabled safely. One that sends requests
+  (`http.send`) is active testing: say so in its description, put the
+  sending behind a setting where it makes sense, and keep it to the hosts
+  the targets cover (`targets.match(url)`). Plugins *can* reach any host, but
+  testing off-target hosts is a decision for the user, not the plugin.
+- **Heavy text work goes to Go.** goja is many times slower than V8. Scan
+  bodies with `text.scan` (RE2: no backreferences or lookaround, repeats up
+  to 1000, linear time) and extract URLs with `text.urls`. Don't loop a JS
+  regex over megabytes. Skip bodies larger than you need (`wordpress` caps
+  at 4 MiB).
+- **Every turn has 250 ms.** A hook call, a timer callback, or the code
+  between two `await`s is interrupted after 250 ms of CPU (waiting on the
+  network doesn't count). A plugin that fails 5 times in a minute is
+  stopped for the session. Break up big work, and never busy-wait.
+- **Findings explain themselves.** `findings.record` requires `notes`: say
+  what was found, where, and why it matters, in plain language a tester can
+  act on. The `value` is the identity: findings with the same value merge
+  into one with another sighting. So choose a value that is stable and
+  specific (`"akismet (blog.test)"`, the token itself), and link the flow
+  (`flowId`, `location`, `detail`). Declare the plugin's finding types in
+  `finding_types`, with a distinct colour.
+- **Claim no more than the evidence shows.** Say "probably" or "unknown"
+  when that is the truth (see how `wordpress` handles a `?ver=` that is
+  really the core version). A false finding wastes a tester's time.
+- **Secrets are settings of type `secret`.** They never have a default and
+  never go in `plugin.json` or the repo. Read them with `settings.get`.
+  Never log a secret, and redact credentials you record when the full value
+  isn't needed (see `sensitive-info/src/redact.ts`).
+- **No outside code.** A plugin can import its own files (relative paths),
+  `.json` files, and the SDK (`reproxy`, plus `reproxy/testing` in tests),
+  and nothing else: no npm packages, Node built-ins, `fetch`, `require`,
+  `process`, filesystem or DOM. Vendor small helpers under `src/` (keep their
+  licence notice). Unicode property escapes (`\p{L}`) don't work in JS
+  regexes; use `text.scan`.
+- **Your own traffic is skipped.** Hooks don't see the plugin's own sends
+  unless a target sets `self` (never allowed on intercept hooks). A send
+  made while handling your own traffic counts a level deeper, and past
+  depth 3 it fails with `E_RECURSION`. Don't design around feeding yourself.
+- **State is per run.** Module-level variables last until the plugin is
+  reloaded. Reset them in a `plugin.on_load` function (tests call it in
+  `beforeEach`). Use `storage` (1 MiB, JSON) only for what must survive a
+  restart, and `storage.engagement` for what belongs to the engagement.
+
+## Writing a plugin: the workflow
+
+1. **Pick a name**: 2 to 64 lower-case letters, digits and dashes. Create
+   `plugins/<name>/` with that exact name.
+2. **Write `plugin.json`**, starting from the closest existing plugin:
+   - `"version": "1.0-1"`, `"sdk": "1"`, `"author": { "name": "reProxy" }`
+     for first-party plugins (no personal names or emails).
+   - `"status": "disabled"`, unless the plugin is passive and cheap enough
+     to run on everything it matches.
+   - a one- or two-sentence `description` saying what it does, and whether
+     it sends requests.
+   - `finding_types` if it records findings.
+   - `targets`, with tight `match` filters.
+   - `settings` for anything a user might reasonably want to change.
+
+   Unknown fields are refused, so a typo is an error, not a no-op.
+3. **Put the logic in `src/` as plain functions**: given text or a parsed
+   value, return what was found. Keep SDK calls (`findings.record`,
+   `endpoints.add`, `http.send`) in `main.ts`'s hook functions, which glue
+   the events to that logic. Then the logic can be tested with no
+   fixtures at all.
+4. **Write `main.ts`.** Start it with a comment saying what the plugin does,
+   what it watches, and why it is built that way (see the top of
+   `wordpress/main.ts`). Type each hook's argument with `Hooks["<hook>"]`
+   (or `PendingEvent` / `WebSocketPendingEvent` for intercept hooks).
+   Export every function a target names.
+5. **Write tests** in `test/`:
+   - unit tests for `src/` (`<module>.test.ts`);
+   - `hooks.test.ts`, which drives the hook functions through
+     `mock.dispatch`, so the manifest's `match` filters are exercised as core
+     would run them. Assert what was recorded with `mock.findings()` and
+     `mock.endpoints()`, and what was sent with `mock.sent()` (outbound
+     requests are never really sent; script them with `mock.respond`).
+   - Cover what the filter must turn away as well as what it accepts:
+     `mock.dispatch` resolves with how many functions ran, so `toBe(0)`
+     proves a filter works.
+6. **Validate and test** (see the commands below) until both are clean.
+7. **Update `README.md`** if the plugin should be listed or the reference
+   changed.
+
+Changing an existing plugin: bump `version` (`1.0-1` → `1.0-2` for a fix,
+`1.1` for a feature), keep its tests passing and add one for the change.
+Renaming a setting key orphans what users saved under the old key, so
+avoid it.
+
+## Commands
+
+The `reproxy` binary carries the plugin tools. None of them start the app or
+need a display. From `/workspaces/reproxy`, `make build` writes
+`bin/reproxy`; `go run ./cmd/reproxy plugin ...` works too.
+
+```sh
+R=/workspaces/reproxy/bin/reproxy
+$R plugin validate plugins/<name>          # manifest + exported functions
+$R plugin test plugins/<name>              # every *.test.ts
+$R plugin test -v -run 'JWT' plugins/<name>  # one test, with the plugin's log
+$R plugin types plugins/<name>             # SDK types + tsconfig.json for an editor
+
+# everything, before committing:
+for d in plugins/*/; do $R plugin validate "$d" && $R plugin test "$d" || break; done
+```
+
+Tests run in the same goja runtime as the app, against a throwaway
+engagement with real stores: findings really merge, endpoints really
+template. Each test has 5 s, and everything is reset before each one.
+
+`plugin types` writes `.reproxy/` and `tsconfig.json` into the plugin's
+directory. TypeScript types are only stripped when a plugin loads, never
+checked, so this is how you get type errors in an editor. Don't commit
+those files (`.gitignore` covers them).
+
+To try a plugin in the running app, copy (or symlink) its directory into
+`~/.reproxy/plugins/` and open the Plugins window. It looks for plugins
+again each time that section is shown, and **Reload** picks up edits. The
+plugin's log, call counts and errors are shown there. For a headless
+check, see the Xvfb notes in `/workspaces/reproxy/CLAUDE.md`.
+
+## Where the truth is
+
+The README describes the SDK; the app's code defines it. When in doubt, read:
+
+| What | Where (in `/workspaces/reproxy`) |
+|---|---|
+| The SDK: every function, model and event type | `internal/plugin/sdk/index.ts` |
+| The test harness (`mock`, `expect`) | `internal/plugin/sdk/testing.ts` |
+| The runtime's globals | `internal/plugin/sdk/globals.d.ts` |
+| The hook catalog, and which hooks are lifecycle, observe or decide | `internal/plugin/manifest/hooks.go` |
+| Manifest validation | `internal/plugin/manifest/manifest.go` |
+| Match filters and which fields apply to which hooks | `internal/plugin/manifest/match.go` |
+| What is downloaded on install | `internal/plugin/registry/registry.go` (`keepInstallable`) |
+| How plugins are bundled and run (imports, the time budget) | `internal/plugin/jsrt/` |
+
+A quick reminder of what's there (the README has the details):
+
+- **Hooks.** Lifecycle hooks: `plugin.on_load`, `on_unload`,
+  `on_status_change`, `on_settings_change`. Observe hooks: `traffic.*`
+  (`on_request_received`, `on_request_forwarded`, `on_response_received`,
+  `on_response_forwarded`, `on_flow_complete`, `on_flow_failed`,
+  `on_flow_dropped`), `intercept.on_released`, `replay.on_sent`,
+  `finding.on_finding_created`/`_updated`/`_removed`, `target.on_changed`,
+  `engagement.on_opened`/`_closed`, `endpoint.on_discovered`/`_updated`,
+  `websocket.on_open`/`on_message`/`on_close`. Decide hooks:
+  `intercept.on_request_pending`, `intercept.on_response_pending`, and
+  `websocket.on_message_pending` (which needs `hold`).
+- **Decisions** (decide hooks): `decision.pass()` (or return nothing),
+  `decision.edit(text)`, `decision.forward(text?)`, `decision.drop()`.
+  Change messages with `edit.setHeader`, `edit.removeHeader` and
+  `edit.setBody` on `message.editable()`; Content-Length is fixed up for
+  you.
+- **SDK modules**: `plugin`, `log`, `settings`, `storage`, `flows`,
+  `findings`, `targets`, `endpoints`, `http`, `intercept`, `text`,
+  `decision`, `edit`.
+- **Messages** are decoded lazily: `head()`, `headers()`, `header(name)`,
+  `contentType()`, `text()` (dechunked and decompressed), `json()`,
+  `isBinary()`, `raw()`, `body()`, `editable()`.
+- **Outbound requests** (`http.send`) always go through the user's upstream
+  proxy chain. They're unrecorded unless `{ record: true }`, and go through
+  reProxy's own proxy (recorded and interceptable) with
+  `{ throughProxy: true }`. Limits: 16 in flight, 16 MiB per response,
+  30 s default timeout.
+- **DNS lookups** show in reProxy's traffic list as flows of their own, but
+  plugins never see them: no hook fires for a lookup.
+
+## Repository conventions
+
+- Write in plain, direct English, in comments, notes, descriptions and
+  docs alike. Comments say *why*, in full sentences; match the density of
+  the existing plugins.
+- TypeScript: `import { … , type X } from "reproxy"`, named exports, no
+  default exports, two-space indent, double quotes, semicolons.
+- Keep each plugin self-contained. Plugins don't import from each other.
+  If two need the same helper (a JWT decoder, say), each keeps its own copy
+  under `src/`.
+- No test fixtures from real engagements: no real hosts, credentials or
+  personal data. Use `*.test` hosts and obviously fake values.
+- Commit only when asked. Commit messages say what changed and why.

@@ -19,7 +19,8 @@
 // the core version is reported as unknown rather than as the plugin's; see
 // src/fingerprint.ts.
 
-import { findings, flows, log, settings, type Endpoint, type Flow, type Hooks, type Location } from "reproxy";
+import { findings, flows, http, log, settings, type Endpoint, type Flow, type Hooks, type Location } from "reproxy";
+import { pluginProbes, probePath, themeProbes, type Probe } from "./src/active";
 import { fromHeaders, fromPath, looksWordPress, read, versionOf, type Fact } from "./src/fingerprint";
 import { readRest, routeOf } from "./src/rest";
 
@@ -51,12 +52,22 @@ const scanned = new Set<number>(); // flows already read
 const wpSites = new Set<string>(); // hosts shown to be WordPress
 const coreVersions: Record<string, string> = {}; // host → core version seen
 const versions: Record<string, string> = {}; // kind:host:slug → version recorded
+const probed = new Set<string>(); // kind:host:slug already actively probed
+let activeProbes = 0; // requests this plugin has sent this session
 let warned = false;
+
+// Active scanning is bounded so that turning it on can't flood a site. One
+// probe per part, a handful per endpoint event, and a hard session cap.
+const maxProbesPerEvent = 12;
+const maxActiveProbes = 100;
+const probeTimeoutMs = 10000;
 
 export function init({ reason }: Hooks["plugin.on_load"]): void {
   reported.clear();
   scanned.clear();
   wpSites.clear();
+  probed.clear();
+  activeProbes = 0;
   warned = false;
   for (const k of Object.keys(coreVersions)) delete coreVersions[k];
   for (const k of Object.keys(versions)) delete versions[k];
@@ -106,6 +117,93 @@ export async function onEndpoint({ endpoint }: Hooks["endpoint.on_discovered"]):
   for (const s of facts) {
     if (s.fact.kind !== "core") await recordPart(s);
   }
+
+  // Everything above is passive. If the user has turned active scanning on,
+  // ask the site for the version of any plugin or theme the traffic didn't
+  // state one for. Only the endpoint's own host is probed: the Map hook
+  // already filtered it to scope, so this never reaches off-target hosts.
+  if (settings.get<boolean>("active_version_scan")) {
+    await acquireVersions(endpoint, facts);
+  }
+}
+
+/**
+ * acquireVersions probes for the version of each plugin or theme on the
+ * endpoint's host whose version the traffic didn't give. It is the only
+ * part of this plugin that sends a request, and runs only when the user
+ * asked for it.
+ */
+async function acquireVersions(endpoint: Endpoint, facts: Sighting[]): Promise<void> {
+  let perEvent = 0;
+  for (const s of facts) {
+    const f = s.fact;
+    if (f.kind !== "plugin" && f.kind !== "theme") continue;
+    // The version is known from traffic, or this part was already probed.
+    const key = `${f.kind}:${s.host}:${f.name}`;
+    if (versions[key] || probed.has(key)) continue;
+    // Keep active scanning to the in-scope host that fired the hook; a slug
+    // read from another host's page is left to passive reporting.
+    if (s.host !== endpoint.host) continue;
+    if (!wpSites.has(s.host)) continue;
+    if (perEvent >= maxProbesPerEvent || activeProbes >= maxActiveProbes) break;
+    probed.add(key);
+    perEvent++;
+    await probe(endpoint.scheme, s);
+  }
+}
+
+/** probe tries each file for a part until one states a version. */
+async function probe(scheme: string, s: Sighting): Promise<void> {
+  const f = s.fact;
+  const probes: Probe[] =
+    f.kind === "theme" ? themeProbes(scheme, s.host, f.name) : pluginProbes(scheme, s.host, f.name);
+  for (const p of probes) {
+    if (activeProbes >= maxActiveProbes) return;
+    activeProbes++;
+    let res;
+    try {
+      // Sent with record so the probe shows in the Traffic list — an active
+      // scan should be auditable — but not through the proxy, so it doesn't
+      // wait on interception or re-enter the Map.
+      res = await http.send({ url: p.url }, { record: true, timeoutMs: probeTimeoutMs });
+    } catch (e) {
+      log.debug(`version probe ${p.url} failed: ${e}`);
+      continue;
+    }
+    if (!res.ok || res.isBinary()) continue;
+    const version = p.read(res.text());
+    if (!version) continue;
+    versions[`${f.kind}:${s.host}:${f.name}`] = version;
+    await recordActiveVersion(s, version, p.url, res.flowId);
+    return; // one version is enough
+  }
+}
+
+/**
+ * recordActiveVersion records a version acquired by a request of ours. It
+ * merges into the part's finding like a passive sighting, but says plainly
+ * that it was asked for rather than overheard.
+ */
+async function recordActiveVersion(s: Sighting, version: string, url: string, flowId: number): Promise<void> {
+  if (!wpSites.has(s.host)) return;
+  const f = s.fact;
+  const path = probePath(url);
+  await record(`active:${f.kind}:${s.host}:${f.name}:${version}`, {
+    value: `${f.name} (${s.host})`,
+    types: [`wordpress-${f.kind}`],
+    notes:
+      `${s.host} serves a ${f.kind} named ${f.name}. An active request to ${path} states version ` +
+      `${version}; check that against the current release of the ${f.kind}. Unlike the rest of this ` +
+      `plugin's findings, this version was acquired by a request reProxy sent, not read from traffic ` +
+      `that had already passed.`,
+    fields: [
+      { key: "host", value: s.host },
+      { key: "slug", value: f.name },
+      { key: "version", value: version },
+    ],
+    flowId: flowId || undefined,
+    location: flowId ? "response_body" : undefined,
+  });
 }
 
 /**

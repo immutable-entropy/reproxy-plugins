@@ -5,17 +5,20 @@ request passes through the proxy, interception holds a message, a finding is
 recorded. It can read the traffic and act on it: record findings, put
 endpoints on the Map, send requests, and edit, forward or drop held messages.
 
-This directory holds the **bundled** plugins, which are compiled into the app.
-Your own plugins go in the data directory's `plugins/` folder
-(`~/.reproxy/plugins` on macOS, Linux and BSD; `%APPDATA%\reproxy\plugins` on
-Windows). Settings → Plugins has a button that opens it. Two examples ship
-here, both disabled by default:
+No plugins are built into reProxy: every plugin is installed from a
+repository, and this one is the default. Open the **Plugins** window (the
+puzzle piece above the cog in the navigation bar), and add plugins from the
+**Repositories** section. A plugin is installed disabled, into the data
+directory's `plugins/` folder (`~/.reproxy/plugins` on macOS, Linux and BSD;
+`%APPDATA%\reproxy\plugins` on Windows), and runs once you enable it. Your
+own plugins can go straight into that folder; the Plugins window has a
+button that opens it. The plugins here:
 
 | Plugin | What it does |
 |---|---|
-| [`sensitive-info`](sensitive-info) | Flags passwords, tokens, API keys, private keys and email addresses in traffic as findings |
-| [`endpoint-mapper`](endpoint-mapper) | Puts URLs found in JSON, scripts, robots.txt, sitemaps and OpenAPI documents on the Map |
-| [`saml-inspector`](saml-inspector) | Decodes SAML exchanges (including DEFLATE redirect binding) and flags subjects, attributes and assertion weaknesses as findings |
+| [`wordpress`](plugins/wordpress) | Recognises WordPress sites from the Map and records the core version, plugins, themes, REST namespaces and exposed accounts as findings. Passive by default; an opt-in active scan requests a part's readme.txt/style.css to pin a version the traffic didn't state |
+| [`sensitive-info`](plugins/sensitive-info) | Flags passwords, tokens, API keys, private keys and email addresses in traffic as findings |
+| [`saml-inspector`](plugins/saml-inspector) | Decodes SAML exchanges (including DEFLATE redirect binding) and flags subjects, attributes and assertion weaknesses as findings |
 
 ## Layout
 
@@ -34,9 +37,9 @@ The directory name must equal the plugin's `name`. `main.ts` can import:
 - the SDK, `reproxy` (and `reproxy/testing` in tests).
 
 Nothing else can be imported: no npm packages, no Node built-ins, nothing
-outside the directory. Vendor what you need under `src/`. Bundled plugins in
-this repo keep their modules in `src/`, because only `plugin.json`, top-level
-`.ts` files and `src/` are embedded in the binary.
+outside the directory. Vendor what you need under `src/`. Installing a plugin
+downloads its `.ts`, `.js`, `.json`, `.md` and `.txt` files, but not its tests
+(`*.test.ts`, or anything under `test/`).
 
 ## plugin.json
 
@@ -68,16 +71,16 @@ this repo keep their modules in `src/`, because only `plugin.json`, top-level
 |---|---|
 | `name` | Required. 2–64 lower-case letters, digits and dashes, equal to the directory's name. |
 | `version` | Required. `major.minor`, `major.minor-sub` (sub is a build counter: 1.0-2 is newer than 1.0-1, which is newer than 1.0), or semver `major.minor.patch[-pre]`. |
-| `description` | Optional. Shown in Settings → Plugins. |
+| `description` | Optional. Shown in the Plugins window. |
 | `author` | `name` is required; `email` is optional. |
-| `status` | `enabled` or `disabled`: the default until the user chooses in Settings. |
+| `status` | `enabled` or `disabled`: the default for a plugin put in the plugins folder by hand. One installed from a repository always starts disabled. |
 | `sdk` | The SDK major version the plugin was written for (`"1"`). A mismatch is refused rather than half-working. |
 | `finding_types` | Optional. Types the plugin's findings use. They are added to the catalog while the plugin is enabled, and never saved to the user's settings. |
 | `targets` | Required. Maps hooks to exported functions (see below). Each `function` must be exported by `main.ts`; this is checked when the plugin is found, without running it. |
-| `settings` | Optional. What the user can set in Settings → Plugins (see below). |
+| `settings` | Optional. What the user can set in the Plugins window (see below). |
 
 Unknown fields are refused, so a typo is reported instead of ignored. Every
-problem with a manifest is listed in Settings → Plugins and by
+problem with a manifest is listed in the Plugins window and by
 `reproxy plugin validate`.
 
 ### Targets
@@ -140,8 +143,8 @@ can't change traffic. To change traffic, use the intercept hooks.
 | `intercept.on_response_pending` | `{ flow, message }`: interception is holding a response. |
 | `websocket.on_message_pending` | `{ flow, message }`: a WebSocket message is held for editing (needs `hold`; see WebSocket below). |
 
-These see only what the user's interception rules hold (Settings →
-Interception, while interception is on). Plugins see the message before the
+These see only what the user's interception holds (each target's Hold
+requests / Hold responses, while interception is on). Plugins see the message before the
 user does, one at a time in priority order. Each returns one of these:
 
 - `decision.pass()`, or nothing: no opinion.
@@ -151,7 +154,7 @@ user does, one at a time in priority order. Each returns one of these:
 - `decision.drop()`: drop it now.
 
 After `forward` or `drop` the user never sees the message, unless "Let
-plugins forward or drop held messages" is off in Settings → Plugins. In that
+plugins forward or drop held messages" is off in the Plugins window. In that
 case they count as an edit and a pass. A timeout, an error or an answer that
 isn't a decision counts as a pass.
 
@@ -167,7 +170,7 @@ rewriter, for example.
   answered it goes on: forwarded as edited, or dropped if a plugin said so.
   "Let plugins forward or drop held messages" doesn't apply to these.
 - The user turns holding off with "Let plugins hold traffic for themselves"
-  in Settings → Plugins.
+  in the Plugins window.
 - Only matching traffic waits, and a held message is buffered whole. Keep
   `match` tight, because everything it accepts costs a round trip into the
   plugin.
@@ -252,7 +255,7 @@ waits for it.
 |---|---|
 | `key` | Lower-case letters, digits and `_`. |
 | `type` | `string`, `number`, `boolean`, `enum` (needs `options`), `list` (of strings), or `secret`. If left out, it is inferred from `default`. |
-| `label`, `description` | What Settings → Plugins shows. |
+| `label`, `description` | What the Plugins window shows. |
 | `default` | The value until the user changes it. A secret has no default. |
 
 The user's changes are saved in reProxy's settings file, never in your
@@ -268,13 +271,13 @@ import { plugin, log, settings, storage, flows, findings, targets, endpoints, ht
 
 | | |
 |---|---|
-| `log.debug/info/warn/error` | The plugin's log, shown in Settings → Plugins. `console.*` goes there too. |
+| `log.debug/info/warn/error` | The plugin's log, shown in the Plugins window. `console.*` goes there too. |
 | `settings.get(key)`, `settings.all()` | Current setting values, secrets included. |
 | `storage.get/set/delete/keys` | Persistent JSON storage for the plugin (1 MiB). `storage.engagement.*` is kept in the open engagement's database and travels with it. |
 | `flows.get(id)`, `flows.list(q)`, `flows.search(text, { regex })` | The traffic list. |
 | `findings.record(draft)`, `findings.list(q)`, `findings.types()` | Record a finding. `notes` is required, and saying why the plugin raised it is the point. A finding with the same value merges in as another sighting. |
 | `targets.list()`, `targets.match(url)` | The targets in scope. |
-| `endpoints.add({ url, flowId, detail })`, `endpoints.get(url)`, `endpoints.list(q)` | The Map. An added URL is templated like visited ones (`/users/12` → `/users/{id}`, and `{orderId}` placeholders too), so it merges with what the traffic put there. |
+| `endpoints.add({ url, flowId, detail })`, `endpoints.get(url)`, `endpoints.list(q)` | The Map. An added URL is templated like visited ones (`/users/12` → `/users/{id}`, and `{orderId}` placeholders too), so it merges with what the traffic put there. Core already reads every response for the URLs it refers to (HTML, CSS, scripts, JSON, robots.txt, sitemaps, OpenAPI, and headers such as Location and Content-Security-Policy), so add what only your plugin can find. A URL on a host no target covers is kept but listed under Targets → Related rather than drawn, until the user promotes the host. |
 | `http.send(request, options)` | Outbound HTTP (see below). |
 | `intercept.held()`, `intercept.forward(id, text?)`, `intercept.drop(id)` | Messages held for the user. |
 | `text.scan(input, patterns)`, `text.urls(input, base)` | Regular expressions and URL extraction, run in Go. |
@@ -292,7 +295,7 @@ if (r.ok) log.info(r.json());
 ```
 
 - Requests always go out through the upstream proxy chain configured in
-  Settings → Proxy.
+  Settings → Outbound Traffic.
 - By default they don't go through reProxy's own proxy, so they aren't
   recorded. Pass `{ record: true }` to list one in the traffic anyway.
 - Pass `{ throughProxy: true }` to send through reProxy's proxy, so the
@@ -327,7 +330,7 @@ if (r.ok) log.info(r.json());
   has 250 ms to run before it is interrupted. Waiting on the network doesn't
   count.
 - A plugin that fails 5 times within a minute is stopped for the session
-  ("faulted"). Fix it and press Reload in Settings → Plugins.
+  ("faulted"). Fix it and press Reload in the Plugins window.
 - TypeScript types are stripped, not checked. Run `reproxy plugin types <dir>`
   to write the SDK and a `tsconfig.json` beside your plugin, so your editor
   checks it.
@@ -378,4 +381,8 @@ describe("tokens", () => {
 | `mock.respond(urlPattern, { status, headers, body })`, `mock.sent()` | Script outbound responses, and see what was sent. |
 | `mock.settings({ key: value })` | Override settings for one test. |
 
-The bundled plugins' tests run with `make test-core` (package `internal/bundled`, which reads them from `plugins/`).
+Before committing, run every plugin's checks from this repo's root:
+
+```
+for d in plugins/*/; do reproxy plugin validate "$d" && reproxy plugin test "$d" || break; done
+```

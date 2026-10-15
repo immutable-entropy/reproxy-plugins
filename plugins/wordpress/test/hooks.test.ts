@@ -222,3 +222,94 @@ describe("the hooks it is on", () => {
     expect(mock.sent()).toHaveLength(0);
   });
 });
+
+describe("active version scanning", () => {
+  // On this page contact-form-7's assets carry ?ver=6.4.3 — the core
+  // version — so the traffic never states the plugin's own version.
+  const cfPage = `<!doctype html><html><head>
+    <meta name="generator" content="WordPress 6.4.3" />
+    <script src="/wp-content/plugins/contact-form-7/includes/js/index.js?ver=6.4.3"></script>
+    <script src="/wp-content/plugins/akismet/_inc/akismet.js?ver=5.3.1"></script>
+    </head><body></body></html>`;
+
+  it("asks for a plugin's readme.txt when the traffic gave no version", async () => {
+    mock.settings({ active_version_scan: true });
+    mock.respond("/wp-content/plugins/contact-form-7/readme\\.txt", {
+      status: 200,
+      headers: { "Content-Type": "text/plain" },
+      body: "=== Contact Form 7 ===\nStable tag: 5.9.2\n",
+    });
+
+    await mock.dispatch("endpoint.on_discovered", {
+      url: "https://blog.test/",
+      responseHeaders: { "Content-Type": "text/html" },
+      responseBody: cfPage,
+    });
+
+    const urls = mock.sent().map((r) => r.url);
+    expect(urls).toContain("https://blog.test/wp-content/plugins/contact-form-7/readme.txt");
+    // A plugin whose version the traffic did state is not asked for.
+    expect(urls.some((u) => u.indexOf("akismet") >= 0)).toBe(false);
+
+    const cf = byValue("contact-form-7 (blog.test)");
+    expect(cf?.notes).toContain("version 5.9.2");
+    expect(cf?.notes).toContain("active request");
+    expect(cf?.fields).toContain({ key: "version", value: "5.9.2" });
+  });
+
+  it("asks for a theme's style.css", async () => {
+    mock.settings({ active_version_scan: true });
+    mock.respond("/wp-content/themes/storefront/style\\.css", {
+      status: 200,
+      headers: { "Content-Type": "text/css" },
+      body: "/*\nTheme Name: Storefront\nVersion: 3.9.1\n*/\n",
+    });
+
+    await mock.dispatch("endpoint.on_discovered", {
+      url: "https://blog.test/",
+      responseHeaders: { "Content-Type": "text/html" },
+      responseBody: `<meta name="generator" content="WordPress 6.4.3" />
+        <link rel="stylesheet" href="/wp-content/themes/storefront/style.css?ver=6.4.3" />`,
+    });
+
+    expect(mock.sent().map((r) => r.url)).toContain("https://blog.test/wp-content/themes/storefront/style.css");
+    expect(byValue("storefront (blog.test)")?.notes).toContain("version 3.9.1");
+  });
+
+  it("sends nothing while the setting is off", async () => {
+    await mock.dispatch("endpoint.on_discovered", {
+      url: "https://blog.test/",
+      responseHeaders: { "Content-Type": "text/html" },
+      responseBody: cfPage,
+    });
+    expect(mock.sent()).toHaveLength(0);
+    expect(byValue("contact-form-7 (blog.test)")?.notes).toContain("which is the core version");
+  });
+
+  it("records no version when the file isn't there (404) or doesn't state one", async () => {
+    mock.settings({ active_version_scan: true });
+    // No mock.respond rule: the harness answers 404.
+    await mock.dispatch("endpoint.on_discovered", {
+      url: "https://blog.test/",
+      responseHeaders: { "Content-Type": "text/html" },
+      responseBody: cfPage,
+    });
+    expect(mock.sent()).toHaveLength(1); // it tried
+    const cf = byValue("contact-form-7 (blog.test)");
+    expect(cf?.notes).toContain("which is the core version");
+    expect(cf?.notes).not.toContain("active request");
+  });
+
+  it("probes a plugin only once across repeated events", async () => {
+    mock.settings({ active_version_scan: true });
+    mock.respond("/contact-form-7/readme\\.txt", { status: 200, body: "Stable tag: 5.9.2\n" });
+    const ep = {
+      url: "https://blog.test/",
+      responseHeaders: { "Content-Type": "text/html" },
+      responseBody: cfPage,
+    };
+    await mock.dispatch("endpoint.on_discovered", ep);
+    await mock.dispatch("endpoint.on_updated", ep);
+    expect(mock.sent().filter((r) => r.url.indexOf("contact-form-7") >= 0)).toHaveLength(1);
+  });
+});
