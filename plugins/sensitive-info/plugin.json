@@ -1,7 +1,7 @@
 {
   "name": "sensitive-info",
-  "version": "1.1",
-  "description": "Scans requests, responses and WebSocket messages for credentials, keys, tokens, password hashes and personal data — in headers, query strings and bodies — and records each as a finding linked to the request it was seen in. It only reads traffic: nothing is held, changed or sent.",
+  "version": "1.2",
+  "description": "Scans requests, responses and WebSocket messages for credentials, keys, tokens, password hashes and personal data — in headers, query strings and bodies — and response headers for what they give away about the stack (server and framework versions, internal hosts and addresses, debugging left on). Each is recorded as a finding linked to the request it was seen in. It only reads traffic: nothing is held, changed or sent.",
   "author": {
     "name": "Kayleigh",
     "email": null
@@ -14,7 +14,8 @@
     { "id": "token", "name": "Token", "color": "#ef6c00" },
     { "id": "hash", "name": "Password Hash", "color": "#00796b" },
     { "id": "personal-data", "name": "Personal Data", "color": "#6a1b9a" },
-    { "id": "payment-data", "name": "Payment Data", "color": "#1565c0" }
+    { "id": "payment-data", "name": "Payment Data", "color": "#1565c0" },
+    { "id": "fingerprint", "name": "Stack Disclosure", "color": "#546e7a" }
   ],
   "targets": [
     {
@@ -62,7 +63,7 @@
       "key": "detectors",
       "type": "list",
       "label": "Detectors to run",
-      "description": "Leave empty to run every detector. Otherwise list detector ids (aws_access_key, field_password, …) or whole categories (credential, secret-key, token, hash, personal-data, payment-data). The plugin's README lists every id.",
+      "description": "Leave empty to run every detector. Otherwise list detector ids (aws_access_key, field_password, …) or whole categories (credential, secret-key, token, hash, personal-data, payment-data, fingerprint). The plugin's README lists every id.",
       "default": []
     },
     {
@@ -99,6 +100,13 @@
       "label": "Hide secret values",
       "description": "A finding whose value is a secret in itself — a password, a key, a token, a hash, a card number, a national identifier — is recorded hidden, so reProxy masks it until you click the eye beside the value. Email addresses, telephone numbers and dates of birth are always left readable.",
       "default": true
+    },
+    {
+      "key": "fingerprint_versions_only",
+      "type": "boolean",
+      "label": "Only report server and framework banners that name a version",
+      "description": "Off: \"Server: nginx\" is a finding as well as \"Server: nginx/1.18.0\". On: only a banner with a version is. Internal hosts and addresses, build numbers, debugging headers and framework cookies are reported either way. Skip the fingerprint category to turn all of them off.",
+      "default": false
     },
     {
       "key": "max_findings",

@@ -1,0 +1,92 @@
+{
+  "name": "vue-spa",
+  "version": "1.0-1",
+  "description": "Recognises Vue.js single-page apps (including Nuxt) and the Vite build behind them, then, on in-scope hosts, fetches any exposed JavaScript source maps and Vite build manifest to recover the app's source-file structure, its framework and build versions, and the URLs it references. Each is recorded as a finding, and discovered hosts and URLs are added to the Entity Explorer. It sends requests to the target to fetch .map and manifest.json files (active), so it is disabled until you enable it.",
+  "author": {
+    "name": "reProxy"
+  },
+  "status": "disabled",
+  "sdk": "1",
+  "finding_types": [
+    { "id": "vue-spa", "name": "Vue.js SPA", "color": "#41b883" },
+    { "id": "source-map", "name": "Exposed Source Map", "color": "#e67e22" },
+    { "id": "build-manifest", "name": "Exposed Build Manifest", "color": "#d35400" },
+    { "id": "tech-version", "name": "Technology Version", "color": "#34495e" }
+  ],
+  "targets": [
+    { "hook": "plugin.on_load", "function": "load" },
+    {
+      "hook": "traffic.on_response_received",
+      "function": "inspectHtml",
+      "match": {
+        "scope": "in_scope",
+        "status": ["2xx"],
+        "content_types": ["text/html", "application/xhtml+xml"]
+      }
+    },
+    {
+      "hook": "traffic.on_response_received",
+      "function": "inspectScript",
+      "match": {
+        "scope": "in_scope",
+        "status": ["2xx"],
+        "content_types": [
+          "application/javascript",
+          "application/x-javascript",
+          "application/ecmascript",
+          "text/javascript",
+          "text/ecmascript",
+          "text/x-javascript"
+        ]
+      }
+    }
+  ],
+  "settings": [
+    {
+      "key": "fetch_source_maps",
+      "type": "boolean",
+      "label": "Fetch exposed source maps",
+      "description": "When a bundle names a .map file (or one sits beside a module asset), fetch it from the target, and record the app source files and versions it reveals. Off: source maps are not requested.",
+      "default": true
+    },
+    {
+      "key": "probe_vite_manifest",
+      "type": "boolean",
+      "label": "Look for Vite's build manifest",
+      "description": "Request the usual build-manifest locations (.vite/manifest.json and the like) once per origin, and record the built files it lists. Off: the manifest is not requested.",
+      "default": true
+    },
+    {
+      "key": "add_discovered_urls",
+      "type": "boolean",
+      "label": "Add URLs found in source maps to the Explorer",
+      "description": "URLs referenced in a source map's content are added to the Entity Explorer (off-target hosts show under Targets → Related). Capped per map.",
+      "default": true
+    },
+    {
+      "key": "max_urls_per_map",
+      "type": "number",
+      "label": "Most URLs to take from one source map",
+      "default": 100
+    },
+    {
+      "key": "max_html_kb",
+      "type": "number",
+      "label": "Largest HTML page read (KiB)",
+      "default": 1024
+    },
+    {
+      "key": "max_js_kb",
+      "type": "number",
+      "label": "Largest bundle read for a map reference (KiB)",
+      "default": 4096
+    },
+    {
+      "key": "max_map_mb",
+      "type": "number",
+      "label": "Largest source map parsed (MiB)",
+      "description": "A map larger than this is recorded as exposed but not parsed, to stay within the plugin's time budget.",
+      "default": 12
+    }
+  ]
+}

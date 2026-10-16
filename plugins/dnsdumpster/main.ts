@@ -194,9 +194,16 @@ async function apply(domain: string, found: Lookup): Promise<void> {
     });
     if (res.created) added++;
     await note(res.entity.key, {
-      "dnsdumpster.records": n.types.map((t) => t.toUpperCase()).join(", "),
+      // The types of record the name appeared under, not the records
+      // themselves: "A", or "A, MX" for a name that is both. The key said
+      // "records" until this was noticed, which read as nonsense beside a
+      // value of "A", so a host still carrying the old one is tidied up.
+      "dnsdumpster.record_types": n.types.map((t) => t.toUpperCase()).join(", "),
       "dnsdumpster.ips": withIPs ? "" : n.ips.join(", "),
     });
+    if (res.entity.kv["dnsdumpster.records"] !== undefined) {
+      await entities.unset(res.entity.key, "dnsdumpster.records");
+    }
   }
   if (withIPs) {
     for (const a of found.ips.values()) {

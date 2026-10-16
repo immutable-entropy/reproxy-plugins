@@ -1,6 +1,6 @@
 {
   "name": "dnsdumpster",
-  "version": "1.0-1",
+  "version": "1.0-2",
   "description": "Looks each domain you add to the targets up with DNSDumpster's API and lists the host names and IP addresses it knows of under Targets → Related, with their DNS details in the Entity Explorer. It sends the target's domain name to api.dnsdumpster.com, a third-party service, and needs your DNSDumpster API key (free accounts get one).",
   "author": {
     "name": "reProxy"

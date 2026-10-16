@@ -1,0 +1,87 @@
+{
+  "name": "js-libraries",
+  "version": "1.0-1",
+  "description": "Recognises the JavaScript libraries your targets serve (jQuery, Bootstrap, AngularJS, React, Vue, Lodash, Moment and others) and records each version found as a finding, from the script's URL or its banner comment. Each exact version is looked up on osv.dev, and every known vulnerability is raised as a finding of its own with a link to its osv.dev page. It sends library names and version numbers (never your targets' addresses) to api.osv.dev.",
+  "author": {
+    "name": "reProxy"
+  },
+  "status": "disabled",
+  "sdk": "1",
+  "finding_types": [
+    { "id": "js-library", "name": "JavaScript Library", "color": "#3f51b5" },
+    { "id": "js-vulnerability", "name": "Vulnerable JavaScript", "color": "#b71c1c" }
+  ],
+  "targets": [
+    { "hook": "plugin.on_load", "function": "load" },
+    {
+      "hook": "traffic.on_response_received",
+      "function": "inspectInScope",
+      "match": {
+        "scope": "in_scope",
+        "status": ["2xx"],
+        "content_types": [
+          "application/javascript",
+          "application/x-javascript",
+          "application/ecmascript",
+          "text/javascript",
+          "text/ecmascript",
+          "text/x-javascript"
+        ]
+      }
+    },
+    {
+      "hook": "traffic.on_response_received",
+      "function": "inspectFromCDN",
+      "match": {
+        "scope": "out_of_scope",
+        "status": ["2xx"],
+        "hosts": [
+          "cdnjs.cloudflare.com",
+          "cdn.jsdelivr.net",
+          "unpkg.com",
+          "code.jquery.com",
+          "ajax.googleapis.com",
+          "ajax.aspnetcdn.com",
+          "*.bootstrapcdn.com",
+          "cdn.datatables.net",
+          "cdn.tiny.cloud",
+          "cdn.ckeditor.com",
+          "code.highcharts.com",
+          "cdn.socket.io",
+          "vjs.zencdn.net"
+        ],
+        "content_types": [
+          "application/javascript",
+          "application/x-javascript",
+          "application/ecmascript",
+          "text/javascript",
+          "text/ecmascript",
+          "text/x-javascript"
+        ]
+      }
+    }
+  ],
+  "settings": [
+    {
+      "key": "query_osv",
+      "type": "boolean",
+      "label": "Look versions up on osv.dev",
+      "description": "Each library version is sent to api.osv.dev once a day at most (the answers are kept), and every known vulnerability becomes a finding. Off: versions are recorded, and nothing is sent.",
+      "default": true
+    },
+    {
+      "key": "cdn_scripts",
+      "type": "boolean",
+      "label": "Check libraries your targets load from public CDNs",
+      "description": "Scripts from cdnjs, jsDelivr, unpkg, code.jquery.com, Google's and Microsoft's CDNs and the like, when a page on a target asked for them (its Referer or Origin is on a target). A page that sends no Referer is missed.",
+      "default": true
+    },
+    {
+      "key": "max_body_kb",
+      "type": "number",
+      "label": "Largest script to read (KiB)",
+      "description": "Scripts larger than this are judged by their URL only.",
+      "default": 4096
+    }
+  ]
+}

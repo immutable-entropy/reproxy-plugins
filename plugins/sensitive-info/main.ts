@@ -17,14 +17,25 @@
 // authenticates (an address, a telephone number, a date of birth) is left
 // readable. Nothing is held: the scanning happens after the message has
 // been forwarded.
+//
+// Response headers are also read for what they give away about the stack
+// (src/fingerprint.ts): the server and its version, the framework, the
+// build, internal hosts and addresses, debugging aids. Those headers are on
+// every response, so each is recorded once per host per run, with notes that
+// don't name the request, so that a finding gains one sighting per host
+// rather than one per response.
 
 import { findings, log, settings, type Flow, type Hooks, type Location, type Message } from "reproxy";
 import { reset, scan, type Hit, type Input, type Options, type Where } from "./src/detectors";
 import { redact } from "./src/redact";
 
+/** The stack disclosures recorded this run, by value and host. */
+const disclosed = new Set<string>();
+
 /** Module state is per run, so it is cleared when the plugin loads. */
 export function load(): void {
   reset();
+  disclosed.clear();
 }
 
 export async function scanRequest({ flow }: Hooks["traffic.on_request_forwarded"]): Promise<void> {
@@ -45,7 +56,14 @@ export async function scanWebSocket({ flow, message }: Hooks["websocket.on_messa
 
 async function record(flow: Flow, side: "request" | "response", input: Input, what = ""): Promise<void> {
   const opts = options();
-  const hits = scan(input, opts);
+  const hits = scan(input, opts).filter((hit) => {
+    if (hit.type !== "fingerprint") return true;
+    const key = `${hit.value}\u0000${flow.host}`;
+    if (disclosed.has(key)) return false;
+    if (disclosed.size > 10000) disclosed.clear();
+    disclosed.add(key);
+    return true;
+  });
   if (hits.length === 0) return;
   for (const hit of hits) {
     log.debug(`${hit.detector} in flow ${flow.id}: ${redact(hit.value)}`);
@@ -82,6 +100,7 @@ function options(): Options {
     ignoreEmails: settings.get<string[]>("ignore_emails"),
     ignoreValues: settings.get<string[]>("ignore_values"),
     hexHashes: settings.get<boolean>("hex_hashes"),
+    versionsOnly: settings.get<boolean>("fingerprint_versions_only") === true,
     maxHits: settings.get<number>("max_findings"),
   };
 }
@@ -107,6 +126,9 @@ function draft(flow: Flow, side: "request" | "response", hit: Hit, what: string)
 
 /** notes says what was found, where, and why it matters. */
 function notes(flow: Flow, side: "request" | "response", hit: Hit, what: string): string {
+  // The same on every host, so sightings merge into one finding; the
+  // finding's links say where it was seen.
+  if (hit.type === "fingerprint") return `${hit.label}, in the ${hit.key} response header. ${hit.note}`;
   const place = what || `the ${side} ${where(hit.where)}`;
   let text = `${hit.label} in ${place} of ${flow.method} ${flow.url}.`;
   if (hit.key) text += ` The field was named "${hit.key}".`;

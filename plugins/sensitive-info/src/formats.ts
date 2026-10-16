@@ -16,7 +16,7 @@
 import type { Branch } from "./pattern";
 
 /** The finding types this plugin declares (see plugin.json). */
-export type FindingType = "credential" | "secret-key" | "token" | "hash" | "personal-data" | "payment-data";
+export type FindingType = "credential" | "secret-key" | "token" | "hash" | "personal-data" | "payment-data" | "fingerprint";
 
 export interface Rule {
   id: string;
@@ -431,9 +431,13 @@ const MASKED_PII = ["ssn", "uk_nino", "field_gov_id"];
  * isSecret reports whether a finding's value should reach the user masked
  * (reProxy hides it behind the eye beside the value). Everything that
  * authenticates — a password, a key, a token, a hash, a card — is masked;
- * personal data only when it is an identifier of its own.
+ * personal data only when it is an identifier of its own; a disclosure of
+ * the stack (fingerprint.ts) never.
  */
 export function isSecret(type: FindingType, detector: string): boolean {
+  // What a site runs on is something to hide from attackers, not from the
+  // tester's screen.
+  if (type === "fingerprint") return false;
   if (type === "personal-data") return MASKED_PII.indexOf(detector) >= 0;
   return true;
 }

@@ -37,6 +37,9 @@ describe("onTargets", () => {
   it("looks a new domain target up and lists what isn't in scope as related", async () => {
     mock.settings({ api_key: "test-key-not-real" });
     answer();
+    // A host noted under the key's old name, to be tidied up by the lookup.
+    await entities.addHost({ host: "shop.example.test", from: "https://example.test/" });
+    await entities.set("//shop.example.test", "dnsdumpster.records", "A");
     mock.target("domain", "example.test");
     await targetsChanged();
 
@@ -55,7 +58,8 @@ describe("onTargets", () => {
     const shop = entities.get("shop.example.test");
     expect(shop?.key).toBe("//shop.example.test");
     expect(shop?.type === "host" && shop.addresses).toEqual(["192.0.2.20"]);
-    expect(shop?.kv["dnsdumpster.records"]).toBe("A");
+    expect(shop?.kv["dnsdumpster.record_types"]).toBe("A");
+    expect(shop?.kv["dnsdumpster.records"]).toBeUndefined(); // the old name of that key
     const addr = entities.get("192.0.2.20");
     expect(addr?.type === "host" && addr.ip).toBe(true);
     expect(addr?.kv["dnsdumpster.asn"]).toBe("64500");

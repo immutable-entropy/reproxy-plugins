@@ -57,6 +57,9 @@ new one:
 | `sensitive-info` | scan a message's headers, query string and body (and WebSocket messages) with `text.scan` (RE2 in Go), keep a big body affordable by gating patterns behind a plain text search, record a secret `hidden`, use tight `content_types` filters, use list, number and boolean settings, and redact values |
 | `saml-inspector` | decode a protocol (base64 + DEFLATE + XML) in pure TypeScript and grade what it finds |
 | `dnsdumpster` | call a third-party API with a `secret` setting, react to `target.on_changed`, pace requests to a rate limit, remember work per engagement (`storage.engagement`), and add hosts and addresses to the Explorer and Targets → Related (`entities.addHost` with `from`) |
+| `certificate-transparency` | ask two services for the same data and merge their answers into one record (failing over when one is down, and merging a half-answered lookup into what an earlier one left), retry and back off on 429/5xx, read a big reply a slice per turn, and parse a binary format (a certificate's SANs) in TypeScript |
+| `js-libraries` | watch responses of one kind (`content_types`) on the targets and, with a `hosts` list and the Referer, the third-party hosts a target's pages load from; gate `text.scan` patterns behind `indexOf` needles; write notes that stay the same on every sighting so findings merge cleanly; look results up in an outside API once and keep the answers in `storage` with an expiry |
+| `vue-spa` | detect a framework and build from the HTML and the bundles it loads; send requests of the plugin's own (`http.send`, through the upstream chain, `record: true`) to fetch build artefacts only on in-scope hosts; parse a large JSON source map and a build manifest defensively; confirm a fact from a second source (the map) when the first (the HTML) is inconclusive; remember probed origins and fetched files in `storage.engagement` so active work is done once |
 
 ## Core or plugin?
 
@@ -163,7 +166,13 @@ every user's traffic, or gets stopped.
   `.json` files, and the SDK (`reproxy`, plus `reproxy/testing` in tests),
   and nothing else: no npm packages, Node built-ins, `fetch`, `require`,
   `process`, filesystem or DOM. Vendor small helpers under `src/` (keep their
-  licence notice). Unicode property escapes (`\p{L}`) don't work in JS
+  licence notice), and treat a vendored file as a pinned dependency: copy it
+  from a tagged release at least 14 days old (the same soak period core
+  holds its Go modules to), never minified, and put a header comment naming
+  the upstream URL, the exact version or commit, the date it was copied and
+  the SHA-256 of the upstream file. Read all of it before committing, and
+  never edit it in place: updating means copying a newer (soaked) release
+  and updating the header. Prefer writing the helper yourself. Unicode property escapes (`\p{L}`) don't work in JS
   regexes; use `text.scan`.
 - **Your own traffic is skipped.** Hooks don't see the plugin's own sends
   unless a target sets `self` (never allowed on intercept hooks). A send
@@ -280,6 +289,11 @@ A quick reminder of what's there (the README has the details):
   `websocket.on_open`/`on_message`/`on_close`. Decide hooks:
   `intercept.on_request_pending`, `intercept.on_response_pending`, and
   `websocket.on_message_pending` (which needs `hold`).
+- **Actions** (`actions` in plugin.json): run by the user from the traffic
+  list's context menu on one request, never by core. The function gets
+  `{ action, flow }` (`ActionHandler`), may answer a message for the status
+  line, and may run up to five minutes; what it sends goes through
+  `http.send`, so through the upstream chain. Test with `mock.action`.
 - **Decisions** (decide hooks): `decision.pass()` (or return nothing),
   `decision.edit(text)`, `decision.forward(text?)`, `decision.drop()`.
   Change messages with `edit.setHeader`, `edit.removeHeader` and

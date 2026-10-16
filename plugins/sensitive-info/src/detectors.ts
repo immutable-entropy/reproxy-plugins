@@ -39,6 +39,7 @@ import {
   type FindingType,
   type Rule,
 } from "./formats";
+import { disclosures, FINGERPRINT, FINGERPRINT_DETECTORS } from "./fingerprint";
 import { decodeClaims } from "./jwt";
 import { compose, scan as scanPattern, type Composed, type Found } from "./pattern";
 import { decodeBase64, digits, isPlaceholder, luhn, plausiblePhone, plausibleSsn, validIban } from "./validate";
@@ -58,6 +59,8 @@ export interface Options {
   hexHashes: boolean;
   /** The most hits one message may yield. */
   maxHits: number;
+  /** Report a server, technology or proxy banner only when it names a version. */
+  versionsOnly?: boolean;
 }
 
 /** Where in a message something was found. */
@@ -119,7 +122,11 @@ export const CATALOG: { id: string; label: string; category: FindingType }[] = [
     category: r.type,
   })),
   ...FIELD_DETECTORS,
+  ...FINGERPRINT_DETECTORS.map((d) => ({ ...d, category: FINGERPRINT })),
 ];
+
+/** The fingerprint detectors that report a banner, which "versionsOnly" can limit to versioned ones. */
+const BANNERS = ["server_banner", "tech_header", "proxy_banner"];
 
 /** enabled reports whether a detector runs, by its id or its category. */
 export function enabled(opts: Options, id: string, category: FindingType): boolean {
@@ -251,6 +258,14 @@ export function scan(input: Input, opts: Options): Hit[] {
   // the URL read as one, rather than as something in the headers.
   if (input.query) readAll(s, input.query, "query", max, opts, add);
   if (input.head) {
+    // What a response's headers give away about the stack (fingerprint.ts).
+    // A request's headers are the browser's, so they say nothing about it.
+    if (input.side === "response") {
+      for (const d of disclosures(input.head)) {
+        if (opts.versionsOnly && !d.versioned && BANNERS.indexOf(d.detector) >= 0) continue;
+        add({ ...d, type: FINGERPRINT, where: "header", secret: false });
+      }
+    }
     for (const m of scanPattern(s.headers, input.head, max)) add(fromHeader(m, s.rules));
     readAll(s, input.head, "header", max, opts, add);
   }

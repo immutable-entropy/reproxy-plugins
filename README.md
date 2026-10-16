@@ -17,9 +17,12 @@ button that opens it. The plugins here:
 | Plugin | What it does |
 |---|---|
 | [`wordpress`](plugins/wordpress) | Recognises WordPress sites from the Entity Explorer and records the core version, plugins, themes, REST namespaces and exposed accounts as findings. Passive by default; an opt-in active scan requests a part's readme.txt/style.css to pin a version the traffic didn't state |
-| [`sensitive-info`](plugins/sensitive-info) | Flags credentials, keys, tokens, password hashes and personal data in requests, responses and WebSocket messages — headers, query strings and bodies — as findings, recording the ones that are secrets in themselves hidden |
+| [`sensitive-info`](plugins/sensitive-info) | Flags credentials, keys, tokens, password hashes and personal data in requests, responses and WebSocket messages — headers, query strings and bodies — as findings, recording the ones that are secrets in themselves hidden; and response headers that give the stack away (server and framework versions, builds, internal hosts and addresses, BIG-IP cookies, debugging left on) |
 | [`saml-inspector`](plugins/saml-inspector) | Decodes SAML exchanges (including DEFLATE redirect binding) and flags subjects, attributes and assertion weaknesses as findings |
+| [`certificate-transparency`](plugins/certificate-transparency) | Looks each domain target up in the Certificate Transparency logs through both crt.sh and ctlogs.dev, merges the two answers certificate by certificate, and puts every host name the certificates cover in the Entity Explorer (issuers, validity, which service saw it), with names on the same certificates outside the domain (related domains) under Targets → Related. Sends the domain name to two third parties; no key needed |
 | [`dnsdumpster`](plugins/dnsdumpster) | Looks each domain target up with DNSDumpster's API (your API key, kept as a secret setting) and lists the host names and addresses it knows of under Targets → Related. Sends the domain name to a third party |
+| [`js-libraries`](plugins/js-libraries) | Recognises the JavaScript libraries the targets serve (from a script's URL or its banner, including scripts a target's page loads from a public CDN) and records each version as a finding; looks each exact version up on osv.dev and raises every known vulnerability as a finding with its osv.dev link, severity and fixed release. Sends package names and versions to osv.dev |
+| [`vue-spa`](plugins/vue-spa) | Recognises Vue.js single-page apps (and Nuxt) and the Vite build behind them; on in-scope hosts it fetches exposed JavaScript source maps and the Vite build manifest to recover the app's source-file structure, its framework and build versions, and the URLs it references. Records a finding per SPA, exposed source map, exposed build manifest and framework version, and fills the Entity Explorer from the hosts and URLs it finds. Sends requests to the target (active) to fetch .map and manifest.json files |
 
 ## Layout
 
@@ -38,7 +41,9 @@ The directory name must equal the plugin's `name`. `main.ts` can import:
 - the SDK, `reproxy` (and `reproxy/testing` in tests).
 
 Nothing else can be imported: no npm packages, no Node built-ins, nothing
-outside the directory. Vendor what you need under `src/`. Installing a plugin
+outside the directory. Vendor what you need under `src/`, from a tagged
+release at least 14 days old, unminified, with a header comment giving its
+upstream URL, version, copy date and SHA-256 (see `CLAUDE.md`). Installing a plugin
 downloads its `.ts`, `.js`, `.json`, `.md` and `.txt` files, but not its tests
 (`*.test.ts`, or anything under `test/`).
 
@@ -77,7 +82,8 @@ downloads its `.ts`, `.js`, `.json`, `.md` and `.txt` files, but not its tests
 | `status` | `enabled` or `disabled`: the default for a plugin put in the plugins folder by hand. One installed from a repository always starts disabled. |
 | `sdk` | The SDK major version the plugin was written for (`"1"`). A mismatch is refused rather than half-working. |
 | `finding_types` | Optional. Types the plugin's findings use. They are added to the catalog while the plugin is enabled, and never saved to the user's settings. |
-| `targets` | Required. Maps hooks to exported functions (see below). Each `function` must be exported by `main.ts`; this is checked when the plugin is found, without running it. |
+| `targets` | Maps hooks to exported functions (see below). Each `function` must be exported by `main.ts`; this is checked when the plugin is found, without running it. A plugin needs at least one target or one action. |
+| `actions` | Optional. What the plugin offers to run on a request the user right-clicks in the traffic list (see [Actions](#actions)). |
 | `settings` | Optional. What the user can set in the Plugins window (see below). |
 
 Unknown fields are refused, so a typo is reported instead of ignored. Every
@@ -256,6 +262,65 @@ export function tag(e: PendingEvent) {
 }
 ```
 
+### Actions
+
+An action is something the user runs by hand: they right-click a request in
+the traffic list, and the menu lists the actions the running plugins offer
+for it, under each plugin's name. Nothing else calls an action's function,
+so an action costs nothing until it is picked.
+
+```json
+"actions": [
+  {
+    "id": "retry-as-guest",
+    "label": "Retry without cookies",
+    "description": "Sends the request again with its Cookie and Authorization headers removed.",
+    "function": "retryAsGuest",
+    "match": { "scope": "in_scope", "methods": ["GET"] }
+  }
+]
+```
+
+| Field | |
+|---|---|
+| `id` | Required. 1–64 lower-case letters, digits and dashes, unique in the plugin. |
+| `label` | Required. The menu item: one line, at most 80 characters. |
+| `description` | Optional. The menu item's tooltip. |
+| `function` | Required. An exported function of `main.ts`. |
+| `match` | Optional. The requests the action is offered for, written like a traffic hook's filter (`content_types` tests the response). Unlike a traffic hook's, with no `sources` it accepts requests from every source, plugins' included: the user chose the request. |
+
+The function is called with `{ hook: "action", action, flow }`: the action's
+`id` (so one function can serve several actions) and the request, as a
+`Flow` like the traffic hooks get, read fresh when the action runs. It may
+be `async`, and may answer with a short message for the user, either a
+string or `{ message }`, which reProxy shows in the status line and writes
+to the plugin's log. If it throws, the user sees the error. Type it with
+`ActionHandler`:
+
+```ts
+import { http, type ActionHandler } from "reproxy";
+
+export const retryAsGuest: ActionHandler = async ({ flow }) => {
+  const headers = flow.request.headers().filter((h) => !/^(cookie|authorization)$/i.test(h.name));
+  const r = await http.send(
+    { url: flow.url, method: flow.method, headers: headers.map((h) => [h.name, h.value]) },
+    { throughProxy: true },
+  );
+  return `answered ${r.status} without credentials (was ${flow.status})`;
+};
+```
+
+Each turn of an action has the usual time budget, and the action as a whole
+may run for up to five minutes, because it is expected to send requests and
+wait for them. Everything it sends goes through `http.send`, so **through
+the upstream proxy chain** like any plugin's traffic (reProxy refuses to
+send a plugin's request any other way). Send with `{ throughProxy: true }`
+so the requests show in the traffic list beside the one the user picked.
+
+An action is active testing the user asked for, on a request they chose;
+keep to what its label says, and to the hosts the targets cover
+(`targets.match(url)`) unless the label says otherwise.
+
 ### Match filters
 
 `match` is evaluated in Go, before anything reaches the plugin. Every field
@@ -424,6 +489,7 @@ describe("tokens", () => {
 | `mock.flow(fixture)` | Puts a flow in the store: `url`, `method`, `requestHeaders`, `requestBody`, `status`, `responseHeaders`, `responseBody`, `source`, `targetId`, `origin`, and `wsMessages` (`{ direction, type, text }[]`) for a WebSocket connection's messages. |
 | `mock.dispatch(hook, subject)` | Calls your targets for the hook whose filters accept the subject (a flow, a fixture, or an entity), and resolves with how many ran, once they have settled. An entity hook given a flow puts it in the Explorer first and dispatches the entity of the hook's type it reached: the URL for `url.*` and `entity.*`, the host for `host.*`, the domain for `domain.*`. A WebSocket message hook is dispatched once per message the flow carries, so one call drives the whole conversation; `websocket.on_open` and `on_close` are dispatched for the connection. |
 | `mock.entity(flowOrFixture, type)` | Puts a flow in the Explorer as core's indexer does (its URL, host and domain, and the URLs its response links to), and returns the URL it reached, or with `"host"`/`"domain"` its host or domain. |
+| `mock.action(id, flowOrFixture)` | Runs one of your actions on a flow, as the context menu would. Resolves with `{ ran, message }`: `ran` is false (and nothing is called) when the action's `match` turns the flow away, which is how to test that the menu wouldn't offer it; `message` is what the action answered. Rejects with what the action threw. |
 | `mock.findings()`, `mock.entities()` | What was recorded. |
 | `mock.target(kind, value)`, `mock.related()` | Add a target as the user would (`"domain"`, `"wildcard"`, `"regex"`, `"ip"`, `"cidr"`), and list the hosts under Targets → Related. Adding a target calls no hook: pass `targets.list()` to your `target.on_changed` function yourself. |
 | `mock.respond(urlPattern, { status, headers, body })`, `mock.sent()` | Script outbound responses, and see what was sent. |
