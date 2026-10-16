@@ -5,13 +5,15 @@
 // Only the payload is read, and only as data: nothing here verifies the
 // signature (an unverified payload is exactly what a tester wants to see).
 
+import { decodeBase64 } from "./validate";
+
 /** decodeClaims returns a JWT's payload as flat string fields, prefixed
  *  "jwt.", or null if the token isn't a decodable JWT. Time claims (exp, iat,
  *  nbf, auth_time) also get the time spelled out. */
 export function decodeClaims(token: string): Record<string, string> | null {
   const parts = token.split(".");
   if (parts.length < 2) return null;
-  const payload = decodeSegment(parts[1]);
+  const payload = decodeBase64(parts[1]);
   if (payload === null) return null;
   let obj: unknown;
   try {
@@ -24,7 +26,7 @@ export function decodeClaims(token: string): Record<string, string> | null {
   const out: Record<string, string> = {};
   flatten("jwt", obj, out, 0);
   // Name the algorithm from the header, so an "alg": "none" token stands out.
-  const header = decodeSegment(parts[0]);
+  const header = decodeBase64(parts[0]);
   if (header) {
     try {
       const h = JSON.parse(header) as Record<string, unknown>;
@@ -60,19 +62,5 @@ function flatten(prefix: string, v: unknown, out: Record<string, string>, depth:
     out[prefix] = `${v} (${new Date(v * 1000).toISOString()})`;
   } else {
     out[prefix] = String(v);
-  }
-}
-
-/** decodeSegment base64url-decodes one JWT segment to UTF-8 text. */
-function decodeSegment(seg: string): string | null {
-  let b64 = seg.replace(/-/g, "+").replace(/_/g, "/");
-  while (b64.length % 4) b64 += "=";
-  try {
-    const bin = atob(b64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return new TextDecoder().decode(bytes);
-  } catch {
-    return null;
   }
 }

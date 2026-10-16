@@ -53,26 +53,41 @@ new one:
 
 | Plugin | Shows how to |
 |---|---|
-| `wordpress` | watch the **Map** (`endpoint.*` hooks) instead of traffic, read the flows behind an endpoint, keep per-run state that `plugin.on_load` resets, and record findings that merge |
-| `sensitive-info` | scan request and response bodies with `text.scan` (RE2 in Go), use tight `content_types` filters, use list, number and boolean settings, and redact values |
+| `wordpress` | watch the **Entity Explorer** (`url.*` hooks) instead of traffic, read the flows behind a URL, keep per-run state that `plugin.on_load` resets, and record findings that merge |
+| `sensitive-info` | scan a message's headers, query string and body (and WebSocket messages) with `text.scan` (RE2 in Go), keep a big body affordable by gating patterns behind a plain text search, record a secret `hidden`, use tight `content_types` filters, use list, number and boolean settings, and redact values |
 | `saml-inspector` | decode a protocol (base64 + DEFLATE + XML) in pure TypeScript and grade what it finds |
+| `dnsdumpster` | call a third-party API with a `secret` setting, react to `target.on_changed`, pace requests to a rate limit, remember work per engagement (`storage.engagement`), and add hosts and addresses to the Explorer and Targets → Related (`entities.addHost` with `from`) |
 
 ## Core or plugin?
 
 reProxy's core (Go) is intercepting, editing and replaying traffic, and
 every request pays for core code, so core stays small and fast. Everything
 else, especially automated QA and security testing, is meant to be built
-**as plugins**. If a feature could be done by watching traffic, the Map or
-findings, or by answering held messages, it belongs here. If it truly can't
+**as plugins**. If a feature could be done by watching traffic, the
+Explorer or findings, or by answering held messages, it belongs here. If it truly can't
 be done without a new hook or SDK function, that's a change to the app
 (`/workspaces/reproxy`, `internal/plugin`). Make it there first, keep the
 SDK and README in step, and say so plainly.
 
-Finding endpoints, hosts and domains in traffic is core, not a plugin: the
-app reads every response for the URLs it refers to, puts them on the Map,
-and lists hosts no target covers under Targets → Related. Don't write a
-plugin that re-extracts links; use `endpoint.*` hooks to act on what core
-found.
+Finding URLs, hosts and domains in traffic is core, not a plugin: the app
+reads every response for the URLs it refers to, puts them in the **Entity
+Explorer** ("the Explorer"), and lists hosts no target covers under Targets →
+Related. Don't write a plugin that re-extracts links; use the entity hooks to
+act on what core found.
+
+The Explorer holds typed **entities**: a `domain` (registrable domain,
+`example.com`) holds name `host`s (a DNS name or IP address on its own,
+key `//api.example.com`, which DNS facts belong to; an IP's is a root), which
+hold origin `host`s (`https://api.example.com:8443`), which hold
+`url`s (templated: `/users/12` → `/users/{id}`). Each has a `key`, its
+`parent`'s key, `visited` (false while only discovered), and a `kv`
+string store any plugin can write (`entities.set`/`unset`); use it to leave
+per-entity notes for other plugins rather than a private map. Each type has
+`on_created`/`_updated`/`_deleted` hooks (`url.*`, `host.*`, `domain.*`),
+and `entity.*` fires for all three (narrow it with `match.types`).
+`on_created`/`_updated` only run for entities in a target unless the user
+opts in to all of them (Settings → Targets); don't rely on hearing about
+related hosts.
 
 ## The rules a plugin must keep
 
@@ -86,7 +101,7 @@ every user's traffic, or gets stopped.
   `paths`, `hosts`, `methods` or `status` wherever the plugin only cares
   about some traffic. A body scanner without a `content_types` filter runs
   on every image and font.
-- **Prefer observe hooks.** `traffic.*`, `endpoint.*`, `finding.*` and the
+- **Prefer observe hooks.** `traffic.*`, the entity hooks, `finding.*` and the
   rest are asynchronous: they never slow the traffic. Only the intercept
   hooks (`intercept.on_request_pending`, `intercept.on_response_pending`,
   `websocket.on_message_pending`) make the proxy wait, and only for what
@@ -97,10 +112,11 @@ every user's traffic, or gets stopped.
   rewriting plugins (header injectors, response rewriters), with the
   tightest `match` that works, and answer fast: the default timeout is 2 s,
   and a timeout counts as a pass.
-- **Watch the Map rather than the traffic when you can.** The Map has one
-  row per endpoint, so `endpoint.on_discovered` runs once per new thing
-  seen, not once per request (see `wordpress`). Narrow `endpoint.on_updated`
-  with `paths`, because it fires on every new hit.
+- **Watch the Explorer rather than the traffic when you can.** The Explorer
+  has one entry per URL (and per host and domain), so `url.on_created` runs
+  once per new thing seen, not once per request (see `wordpress`). Narrow
+  `url.on_updated` with `paths`, because it fires on every new hit (and
+  `host.on_updated`/`domain.on_updated` fire on every hit beneath them).
 - **Stay passive by default.** A plugin that only reads what the traffic
   already carried can be enabled safely. One that sends requests
   (`http.send`) is active testing: say so in its description, put the
@@ -112,13 +128,26 @@ every user's traffic, or gets stopped.
   to 1000, linear time) and extract URLs with `text.urls`. Don't loop a JS
   regex over megabytes. Skip bodies larger than you need (`wordpress` caps
   at 4 MiB).
+- **A pattern with no leading literal is expensive.** `text.scan` runs each
+  pattern it is given in a pass of its own, so compose alternatives into
+  one; but Go's regexp only skips ahead with a text search when a pattern
+  starts with a single literal, and submatches cost more still. A 60-way
+  name alternation over a 512 KiB body takes more than half a second, while
+  `AKIA[0-9A-Z]{16}` takes under a millisecond. Gate such a pattern with
+  `indexOf` on a lower-cased copy first (about 7 ms for fifty needles over
+  512 KiB) and run it only on slices around the hits — `sensitive-info`
+  does this, and keeps `test/cost.test.ts` to prove it still holds.
 - **Every turn has 250 ms.** A hook call, a timer callback, or the code
   between two `await`s is interrupted after 250 ms of CPU (waiting on the
   network doesn't count). A plugin that fails 5 times in a minute is
   stopped for the session. Break up big work, and never busy-wait.
 - **Findings explain themselves.** `findings.record` requires `notes`: say
   what was found, where, and why it matters, in plain language a tester can
-  act on. The `value` is the identity: findings with the same value merge
+  act on. Pass `hidden: true` when the value is a secret in itself (a
+  password, a key, a token, a card number, a national identifier): reProxy
+  then masks it on screen until the user clicks the eye beside it. Data that
+  is sensitive but not secret — an email address, a telephone number — is
+  left readable. The `value` is the identity: findings with the same value merge
   into one with another sighting. So choose a value that is stable and
   specific (`"akismet (blog.test)"`, the token itself), and link the flow
   (`flowId`, `location`, `detail`). Declare the plugin's finding types in
@@ -163,7 +192,7 @@ every user's traffic, or gets stopped.
    Unknown fields are refused, so a typo is an error, not a no-op.
 3. **Put the logic in `src/` as plain functions**: given text or a parsed
    value, return what was found. Keep SDK calls (`findings.record`,
-   `endpoints.add`, `http.send`) in `main.ts`'s hook functions, which glue
+   `entities.addUrl`, `http.send`) in `main.ts`'s hook functions, which glue
    the events to that logic. Then the logic can be tested with no
    fixtures at all.
 4. **Write `main.ts`.** Start it with a comment saying what the plugin does,
@@ -176,7 +205,8 @@ every user's traffic, or gets stopped.
    - `hooks.test.ts`, which drives the hook functions through
      `mock.dispatch`, so the manifest's `match` filters are exercised as core
      would run them. Assert what was recorded with `mock.findings()` and
-     `mock.endpoints()`, and what was sent with `mock.sent()` (outbound
+     `mock.entities()` (`mock.entity(flow)` puts a flow in the Explorer and
+     returns its URL), and what was sent with `mock.sent()` (outbound
      requests are never really sent; script them with `mock.respond`).
    - Cover what the filter must turn away as well as what it accepts:
      `mock.dispatch` resolves with how many functions ran, so `toBe(0)`
@@ -208,7 +238,7 @@ for d in plugins/*/; do $R plugin validate "$d" && $R plugin test "$d" || break;
 ```
 
 Tests run in the same goja runtime as the app, against a throwaway
-engagement with real stores: findings really merge, endpoints really
+engagement with real stores: findings really merge, URLs really
 template. Each test has 5 s, and everything is reset before each one.
 
 `plugin types` writes `.reproxy/` and `tsconfig.json` into the plugin's
@@ -245,7 +275,8 @@ A quick reminder of what's there (the README has the details):
   `on_response_forwarded`, `on_flow_complete`, `on_flow_failed`,
   `on_flow_dropped`), `intercept.on_released`, `replay.on_sent`,
   `finding.on_finding_created`/`_updated`/`_removed`, `target.on_changed`,
-  `engagement.on_opened`/`_closed`, `endpoint.on_discovered`/`_updated`,
+  `engagement.on_opened`/`_closed`, `url.*`, `host.*`, `domain.*` and
+  `entity.*` (each `on_created`/`_updated`/`_deleted`),
   `websocket.on_open`/`on_message`/`on_close`. Decide hooks:
   `intercept.on_request_pending`, `intercept.on_response_pending`, and
   `websocket.on_message_pending` (which needs `hold`).
@@ -255,7 +286,7 @@ A quick reminder of what's there (the README has the details):
   `edit.setBody` on `message.editable()`; Content-Length is fixed up for
   you.
 - **SDK modules**: `plugin`, `log`, `settings`, `storage`, `flows`,
-  `findings`, `targets`, `endpoints`, `http`, `intercept`, `text`,
+  `findings`, `targets`, `entities`, `http`, `intercept`, `text`,
   `decision`, `edit`.
 - **Messages** are decoded lazily: `head()`, `headers()`, `header(name)`,
   `contentType()`, `text()` (dechunked and decompressed), `json()`,

@@ -2,8 +2,8 @@
 
 A plugin is TypeScript that runs inside reProxy when something happens: a
 request passes through the proxy, interception holds a message, a finding is
-recorded. It can read the traffic and act on it: record findings, put
-endpoints on the Map, send requests, and edit, forward or drop held messages.
+recorded. It can read the traffic and act on it: record findings, put URLs
+in the Entity Explorer, send requests, and edit, forward or drop held messages.
 
 No plugins are built into reProxy: every plugin is installed from a
 repository, and this one is the default. Open the **Plugins** window (the
@@ -16,9 +16,10 @@ button that opens it. The plugins here:
 
 | Plugin | What it does |
 |---|---|
-| [`wordpress`](plugins/wordpress) | Recognises WordPress sites from the Map and records the core version, plugins, themes, REST namespaces and exposed accounts as findings. Passive by default; an opt-in active scan requests a part's readme.txt/style.css to pin a version the traffic didn't state |
-| [`sensitive-info`](plugins/sensitive-info) | Flags passwords, tokens, API keys, private keys and email addresses in traffic as findings |
+| [`wordpress`](plugins/wordpress) | Recognises WordPress sites from the Entity Explorer and records the core version, plugins, themes, REST namespaces and exposed accounts as findings. Passive by default; an opt-in active scan requests a part's readme.txt/style.css to pin a version the traffic didn't state |
+| [`sensitive-info`](plugins/sensitive-info) | Flags credentials, keys, tokens, password hashes and personal data in requests, responses and WebSocket messages — headers, query strings and bodies — as findings, recording the ones that are secrets in themselves hidden |
 | [`saml-inspector`](plugins/saml-inspector) | Decodes SAML exchanges (including DEFLATE redirect binding) and flags subjects, attributes and assertion weaknesses as findings |
+| [`dnsdumpster`](plugins/dnsdumpster) | Looks each domain target up with DNSDumpster's API (your API key, kept as a secret setting) and lists the host names and addresses it knows of under Targets → Related. Sends the domain name to a third party |
 
 ## Layout
 
@@ -126,9 +127,39 @@ and asynchronous, so they never slow the traffic down.
 | `finding.on_finding_created` / `_updated` / `_removed` | `{ finding }` |
 | `target.on_changed` | `{ targets }` |
 | `engagement.on_opened` / `engagement.on_closed` | `{ name, path }` |
-| `endpoint.on_discovered` / `endpoint.on_updated` | `{ endpoint }`: something was put on the Map, or gained a request or a link. |
+| `url.on_created` / `_updated` / `_deleted` | `{ entity }` (a `Url`): a URL was put in the Entity Explorer (requested, or discovered in a response), gained a request or a link, or had its key/value store edited; or was removed. |
+| `host.on_created` / `_updated` / `_deleted` | `{ entity }` (a `Host`): the same for a host. It is updated when a request reaches one of its URLs. |
+| `domain.on_created` / `_updated` / `_deleted` | `{ entity }` (a `Domain`): the same for a domain. It is updated when a request reaches one of its hosts. |
+| `entity.on_created` / `_updated` / `_deleted` | `{ entity }`: any of the three. A URL put in the Explorer calls both `url.on_created` and `entity.on_created`. Narrow it with `types`. |
 | `websocket.on_open` / `websocket.on_close` | `{ flow }`: a WebSocket connection's 101 completed, or it ended. |
 | `websocket.on_message` | `{ flow, message }`: a WebSocket message was sent or received. |
+
+**Entities.** The Entity Explorer (the "Explorer") is the engagement's map of
+what the traffic touched. It holds three types of entity, each under the one
+above it (`parent` is the parent's `key`):
+
+| Type | `key` | Example |
+|---|---|---|
+| `domain` | the registrable domain | `example.com` |
+| `host` | a name host: a DNS name or IP address on its own (no scheme), which DNS facts such as `addresses` belong to; a root for an IP or single-label name | `//api.example.com`, `//10.0.0.5` |
+| `host` | an origin, under its name host | `https://api.example.com:8443` |
+| `url` | the templated URL (`/users/12` → `/users/{id}`) | `https://api.example.com:8443/users/{id}` |
+
+Every entity has `type`, `key`, `parent`, `label`, `scheme`/`host`/`path`,
+`targetId`, `origin` (what first put it there: `traffic`, `link`, `referer`,
+`target` or `plugin:<name>`), `visited` (false for one only discovered in a
+response, never requested), `hits`, `links` (what discovered it), and `kv`, a
+string key/value store any plugin can write with `entities.set`. A `Url`
+also has `url`, `operations`, `examples`, `kinds` and `flowIds`; a `Host` has
+`port`, `ip` and `servers`; a `Domain` has `suffix` and `icann`. A plugin's
+own `on_created` events are skipped, like its own traffic.
+
+By default the `on_created` and `on_updated` hooks only run for entities that
+belong to a target: a target covers the entity's host, or the entity is the
+domain or address a target names. A related host's entities, and those from
+traffic no target covers, are left out unless the user turns on Settings →
+Targets → "Run entity hooks for every entity, not only those in a target".
+`on_deleted` always runs, and while no target is set up every entity counts.
 
 Traffic events are `{ hook, flow }`. Requests are streamed: a request is
 already on its way upstream when it is recorded, so for traffic that isn't
@@ -232,16 +263,16 @@ you set must match. Within a field, any entry may match.
 
 | Field | Matches | Hooks |
 |---|---|---|
-| `scope` | `any` (default), `in_scope` (a flow a target covers, or every flow while no targets are configured), `out_of_scope` | traffic, intercept, endpoint |
-| `targets` | target IDs | traffic, intercept, endpoint |
-| `hosts` | `app.test`, `*.app.test` (subdomains), or any glob; ports are ignored | traffic, intercept, endpoint |
-| `paths` | globs over the path without its query: `/api/*` | traffic, intercept, endpoint |
-| `path_regex` | an RE2 regular expression over the path and query | traffic, intercept, endpoint |
+| `scope` | `any` (default), `in_scope` (a flow a target covers, or every flow while no targets are configured), `out_of_scope` | traffic, intercept, entity |
+| `targets` | target IDs | traffic, intercept, entity |
+| `hosts` | `app.test`, `*.app.test` (subdomains), or any glob; ports are ignored | traffic, intercept, entity |
+| `paths` | globs over the path without its query: `/api/*` | traffic, intercept, entity |
+| `path_regex` | an RE2 regular expression over the path and query | traffic, intercept, entity |
 | `methods` | `GET`, `POST`, … | traffic, intercept |
 | `status` | `404`, `2xx`, `500-599` | traffic, intercept |
 | `content_types` | media type globs: `application/json`, `text/*`, `application/*+json`. Request hooks test the request's Content-Type, all others the response's. | traffic, intercept |
 | `sources` | traffic: `proxy`, `replay`, `agent`, `plugin` (default: all but `plugin`); findings: `user`, `agent`, `plugin` | traffic, finding |
-| `types` | finding type IDs | finding |
+| `types` | finding type IDs; for entity hooks, entity types: `domain`, `host`, `url` | finding, entity |
 | `directions` | WebSocket message direction: `sent` (browser→server), `received` | websocket |
 
 Filter as tightly as you can. Traffic your filter turns away costs nothing.
@@ -266,7 +297,7 @@ plugin's `plugin.on_settings_change` is called.
 ## The SDK
 
 ```ts
-import { plugin, log, settings, storage, flows, findings, targets, endpoints, http, intercept, text, decision, edit } from "reproxy";
+import { plugin, log, settings, storage, flows, findings, targets, entities, http, intercept, text, decision, edit } from "reproxy";
 ```
 
 | | |
@@ -275,9 +306,11 @@ import { plugin, log, settings, storage, flows, findings, targets, endpoints, ht
 | `settings.get(key)`, `settings.all()` | Current setting values, secrets included. |
 | `storage.get/set/delete/keys` | Persistent JSON storage for the plugin (1 MiB). `storage.engagement.*` is kept in the open engagement's database and travels with it. |
 | `flows.get(id)`, `flows.list(q)`, `flows.search(text, { regex })` | The traffic list. |
-| `findings.record(draft)`, `findings.list(q)`, `findings.types()` | Record a finding. `notes` is required, and saying why the plugin raised it is the point. A finding with the same value merges in as another sighting. |
+| `findings.record(draft)`, `findings.list(q)`, `findings.types()` | Record a finding. `notes` is required, and saying why the plugin raised it is the point. A finding with the same value merges in as another sighting. Set `hidden: true` when the value is a secret in itself — a password, a key, a session token, a card number, a national identifier — and reProxy keeps it masked on screen until the user clicks the eye beside it; leave it off for data that is sensitive but not secret, such as an email address. It changes the display only: the value is still stored, searched and handed to agents and plugins. |
 | `targets.list()`, `targets.match(url)` | The targets in scope. |
-| `endpoints.add({ url, flowId, detail })`, `endpoints.get(url)`, `endpoints.list(q)` | The Map. An added URL is templated like visited ones (`/users/12` → `/users/{id}`, and `{orderId}` placeholders too), so it merges with what the traffic put there. Core already reads every response for the URLs it refers to (HTML, CSS, scripts, JSON, robots.txt, sitemaps, OpenAPI, and headers such as Location and Content-Security-Policy), so add what only your plugin can find. A URL on a host no target covers is kept but listed under Targets → Related rather than drawn, until the user promotes the host. |
+| `entities.addHost({ host, addresses, from, detail })` | Puts a host in the Explorer without a URL: a DNS name or IP address (no scheme, port or path), with its domain. `addresses` are the IP addresses the name resolves to; each goes in as a host of its own, and the name lists them in `addresses`. Resolves `{ entity, created }` for the name. Use it for what you learn about hosts rather than URLs (DNS records, certificate names); `from` makes one no target covers Related, as for `addUrl`. |
+| `entities.addUrl({ url, flowId, from, detail })`, `entities.get(keyOrUrl)`, `entities.list({ type, targetId, host, parent })`, `entities.children(key)` | The Entity Explorer. `addUrl` resolves `{ entity, created }`; it puts the URL in as discovered, with its host and domain, and a URL already there just gains the link. `get` takes an entity's key, a bare host name or address (its name host, `//name`), or a concrete URL (`https://app.test/users/12`) and returns the URL it falls under. An added URL is templated like visited ones (`/users/12` → `/users/{id}`, and `{orderId}` placeholders too), so it merges with what the traffic put there. Core already reads every response for the URLs it refers to (HTML, CSS, scripts, JSON, robots.txt, sitemaps, OpenAPI, and headers such as Location and Content-Security-Policy), so add what only your plugin can find. A URL on a host no target covers is kept but listed under Targets → Related rather than drawn, until the user promotes the host. That takes something on a target leading to it: the flow (`flowId`) the URL was found in, or, when no flow was involved, `from`, an absolute URL on a host a target covers (`https://example.com/` for a lookup made for that target; see `dnsdumpster`). |
+| `entities.set(key, name, value)`, `entities.unset(key, name)` | Write an entity's `kv` store. They resolve with the entity, and call its `on_updated` hooks; setting the value a key already has changes nothing and calls no hook. |
 | `http.send(request, options)` | Outbound HTTP (see below). |
 | `intercept.held()`, `intercept.forward(id, text?)`, `intercept.drop(id)` | Messages held for the user. |
 | `text.scan(input, patterns)`, `text.urls(input, base)` | Regular expressions and URL extraction, run in Go. |
@@ -326,6 +359,19 @@ if (r.ok) log.info(r.json());
 - goja is far slower than V8, so do heavy matching with `text.scan`. Its
   patterns are Go's RE2: no backreferences or lookaround, and repeat counts
   up to 1000. In exchange, matching takes linear time.
+- `text.scan` is fast, but not free, and a pattern's shape decides how fast.
+  Each pattern it is given is a pass of its own, so compose alternatives into
+  one pattern rather than passing twenty. Go's regexp jumps ahead with a
+  plain text search only when a pattern begins with one literal string: a
+  large alternation has none, and submatches cost more again. Measured on a
+  512 KiB body, `(?i)"?(name|...60 more...)"?\s*[:=]\s*"(.{1,256})"` takes
+  over half a second — more than two turns' budget — while `AKIA[0-9A-Z]{16}`
+  takes under a millisecond. If your pattern has no leading literal, gate it
+  in JavaScript first: `body.toLowerCase().indexOf("password")` and its like
+  cost about 7 ms for fifty needles over that same body, and you can then run
+  the expensive pattern on slices around what they found.
+  `sensitive-info/src/detectors.ts` does exactly this, and
+  `plugins/sensitive-info/test/cost.test.ts` is how to keep it honest.
 - Each turn of plugin code (a hook call, a timer, the code after an `await`)
   has 250 ms to run before it is interrupted. Waiting on the network doesn't
   count.
@@ -346,7 +392,7 @@ reproxy plugin test -v -run JWT <dir>
 ```
 
 Tests run in the same runtime plugins run in, against a throwaway engagement
-with real stores. Findings really merge and endpoints really template, so a
+with real stores. Findings really merge and URLs really template, so a
 test checks what the plugin would do in the app. Outbound requests aren't
 sent: `mock.respond` sets what comes back. Everything is reset before each
 test.
@@ -375,9 +421,11 @@ describe("tokens", () => {
 |---|---|
 | `describe`, `it`/`test`, `beforeEach`, `afterEach` | Grouping and setup. Async tests are awaited, and each has 5 s. |
 | `expect(x)` | `toBe`, `toEqual`, `toBeTruthy`, `toBeFalsy`, `toBeUndefined`, `toBeDefined`, `toBeNull`, `toBeGreaterThan`, `toBeLessThan`, `toContain`, `toMatch`, `toHaveLength`, `toThrow`, plus `.not`, `.resolves` and `.rejects`. |
-| `mock.flow(fixture)` | Puts a flow in the store: `url`, `method`, `requestHeaders`, `requestBody`, `status`, `responseHeaders`, `responseBody`, `source`, `targetId`, `origin`. |
-| `mock.dispatch(hook, flowOrFixture)` | Calls your targets for the hook whose filters accept the flow, and resolves with how many ran, once they have settled. |
-| `mock.findings()`, `mock.endpoints()` | What was recorded. |
+| `mock.flow(fixture)` | Puts a flow in the store: `url`, `method`, `requestHeaders`, `requestBody`, `status`, `responseHeaders`, `responseBody`, `source`, `targetId`, `origin`, and `wsMessages` (`{ direction, type, text }[]`) for a WebSocket connection's messages. |
+| `mock.dispatch(hook, subject)` | Calls your targets for the hook whose filters accept the subject (a flow, a fixture, or an entity), and resolves with how many ran, once they have settled. An entity hook given a flow puts it in the Explorer first and dispatches the entity of the hook's type it reached: the URL for `url.*` and `entity.*`, the host for `host.*`, the domain for `domain.*`. A WebSocket message hook is dispatched once per message the flow carries, so one call drives the whole conversation; `websocket.on_open` and `on_close` are dispatched for the connection. |
+| `mock.entity(flowOrFixture, type)` | Puts a flow in the Explorer as core's indexer does (its URL, host and domain, and the URLs its response links to), and returns the URL it reached, or with `"host"`/`"domain"` its host or domain. |
+| `mock.findings()`, `mock.entities()` | What was recorded. |
+| `mock.target(kind, value)`, `mock.related()` | Add a target as the user would (`"domain"`, `"wildcard"`, `"regex"`, `"ip"`, `"cidr"`), and list the hosts under Targets → Related. Adding a target calls no hook: pass `targets.list()` to your `target.on_changed` function yourself. |
 | `mock.respond(urlPattern, { status, headers, body })`, `mock.sent()` | Script outbound responses, and see what was sent. |
 | `mock.settings({ key: value })` | Override settings for one test. |
 

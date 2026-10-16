@@ -1,7 +1,7 @@
 {
   "name": "wordpress",
-  "version": "1.1",
-  "description": "Recognises WordPress sites and records what they give away about themselves — the core version, the plugins and themes installed, the REST namespaces plugins register and the user accounts exposed — as findings. It reads the Map, not the traffic, and is passive by default. Turn on active version scanning and it will also request the readme.txt / style.css of a plugin or theme whose version the traffic never stated, the way wpscan pins a version down.",
+  "version": "1.2",
+  "description": "Recognises WordPress sites and records what they give away about themselves — the core version, the plugins and themes installed, the REST namespaces plugins register and the user accounts exposed — as findings. It reads the Entity Explorer, not the traffic, and is passive by default. Turn on active version scanning and it will also request the readme.txt / style.css of a plugin or theme whose version the traffic never stated, the way wpscan pins a version down.",
   "author": {
     "name": "reProxy"
   },
@@ -19,13 +19,13 @@
       "function": "init"
     },
     {
-      "hook": "endpoint.on_discovered",
-      "function": "onEndpoint",
+      "hook": "url.on_created",
+      "function": "onUrl",
       "match": { "scope": "in_scope" }
     },
     {
-      "hook": "endpoint.on_updated",
-      "function": "onEndpoint",
+      "hook": "url.on_updated",
+      "function": "onUrl",
       "match": {
         "scope": "in_scope",
         "paths": [
@@ -43,8 +43,8 @@
     {
       "key": "read_pages",
       "type": "boolean",
-      "label": "Read the responses the Map was built from",
-      "description": "On: the plugin reads the page an endpoint was discovered in, and the responses served from it, for versions and REST data. Off: only the endpoints' own paths are read.",
+      "label": "Read the responses the Explorer was built from",
+      "description": "On: the plugin reads the page a URL was discovered in, and the responses served from it, for versions and REST data. Off: only the URLs' own paths are read.",
       "default": true
     },
     {

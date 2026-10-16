@@ -1,14 +1,14 @@
 // wordpress: works out what a WordPress site is built from, and records it.
 //
-// It watches the Map rather than the traffic. Every time an endpoint is put
-// there — by a request, or by a link core found in a response — this plugin
-// looks at what that endpoint and the responses behind it say about the
+// It watches the Entity Explorer rather than the traffic. Every time a URL is
+// put there — by a request, or by a link core found in a response — this
+// plugin looks at what that URL and the responses behind it say about the
 // site: the core version, the plugins and themes whose assets it serves, the
 // REST namespaces plugins register, and the accounts it names. Each becomes
 // a finding linked to the request it was seen in.
 //
-// Watching the Map rather than the traffic is deliberate. The Map already
-// holds one row per endpoint however many times it was requested, so the
+// Watching the Explorer rather than the traffic is deliberate. The Explorer
+// already holds one entry per URL however many times it was requested, so the
 // work happens once per *new thing seen* instead of once per request, and
 // the plugin never sits on the proxy's path. It is also entirely passive:
 // nothing here sends a request, so a site learns nothing about us. What it
@@ -19,14 +19,14 @@
 // the core version is reported as unknown rather than as the plugin's; see
 // src/fingerprint.ts.
 
-import { findings, flows, http, log, settings, type Endpoint, type Flow, type Hooks, type Location } from "reproxy";
+import { findings, flows, http, log, settings, type Flow, type Hooks, type Location, type Url } from "reproxy";
 import { pluginProbes, probePath, themeProbes, type Probe } from "./src/active";
 import { fromHeaders, fromPath, looksWordPress, read, versionOf, type Fact } from "./src/fingerprint";
 import { readRest, routeOf } from "./src/rest";
 
 /** One fact, and where it was seen. */
 interface Sighting {
-  /** The host it is about: the endpoint's, or that of the page it was read in. */
+  /** The host it is about: the URL's, or that of the page it was read in. */
   host: string;
   fact: Fact;
   flowId?: number;
@@ -39,7 +39,7 @@ interface Evidence {
   flowId?: number;
 }
 
-/** The most responses read for one endpoint event. */
+/** The most responses read for one URL event. */
 const maxPages = 3;
 /** Responses bigger than this are left alone. */
 const maxBody = 4 * 1024 * 1024;
@@ -57,7 +57,7 @@ let activeProbes = 0; // requests this plugin has sent this session
 let warned = false;
 
 // Active scanning is bounded so that turning it on can't flood a site. One
-// probe per part, a handful per endpoint event, and a hard session cap.
+// probe per part, a handful per URL event, and a hard session cap.
 const maxProbesPerEvent = 12;
 const maxActiveProbes = 100;
 const probeTimeoutMs = 10000;
@@ -71,30 +71,30 @@ export function init({ reason }: Hooks["plugin.on_load"]): void {
   warned = false;
   for (const k of Object.keys(coreVersions)) delete coreVersions[k];
   for (const k of Object.keys(versions)) delete versions[k];
-  log.debug(`watching the Map for WordPress sites (${reason})`);
+  log.debug(`watching the Explorer for WordPress sites (${reason})`);
 }
 
-export async function onEndpoint({ endpoint }: Hooks["endpoint.on_discovered"]): Promise<void> {
+export async function onUrl({ entity: url }: Hooks["url.on_created"]): Promise<void> {
   const shown: Record<string, Evidence> = {};
   const show = (host: string, why: string, flowId?: number): void => {
     if (why && !shown[host]) shown[host] = { why, flowId };
   };
   const found: Sighting[] = [];
 
-  // The endpoint itself. Its path is the templated one, which keeps a plugin
+  // The URL itself. Its path is the templated one, which keeps a plugin
   // slug (a slug doesn't look like an identifier), and its examples are the
   // concrete paths seen.
-  for (const path of [endpoint.path].concat(endpoint.examples)) {
+  for (const path of [url.path].concat(url.examples)) {
     const fp = looksWordPress(path);
-    show(endpoint.host, fp ? `the path ${path}` : "");
-    for (const fact of fromPath(path)) found.push({ host: endpoint.host, fact });
+    show(url.host, fp ? `the path ${path}` : "");
+    for (const fact of fromPath(path)) found.push({ host: url.host, fact });
   }
 
   // Then the responses behind it: the requests made to it, and the page it
   // was discovered in — which may be another host's, so each flow's facts
   // are attributed to its own host.
   if (settings.get<boolean>("read_pages")) {
-    for (const flow of pages(endpoint)) {
+    for (const flow of pages(url)) {
       scanned.add(flow.id);
       for (const s of readFlow(flow, show)) found.push(s);
     }
@@ -120,20 +120,20 @@ export async function onEndpoint({ endpoint }: Hooks["endpoint.on_discovered"]):
 
   // Everything above is passive. If the user has turned active scanning on,
   // ask the site for the version of any plugin or theme the traffic didn't
-  // state one for. Only the endpoint's own host is probed: the Map hook
+  // state one for. Only the URL's own host is probed: the Explorer hook
   // already filtered it to scope, so this never reaches off-target hosts.
   if (settings.get<boolean>("active_version_scan")) {
-    await acquireVersions(endpoint, facts);
+    await acquireVersions(url, facts);
   }
 }
 
 /**
  * acquireVersions probes for the version of each plugin or theme on the
- * endpoint's host whose version the traffic didn't give. It is the only
+ * URL's host whose version the traffic didn't give. It is the only
  * part of this plugin that sends a request, and runs only when the user
  * asked for it.
  */
-async function acquireVersions(endpoint: Endpoint, facts: Sighting[]): Promise<void> {
+async function acquireVersions(url: Url, facts: Sighting[]): Promise<void> {
   let perEvent = 0;
   for (const s of facts) {
     const f = s.fact;
@@ -143,12 +143,12 @@ async function acquireVersions(endpoint: Endpoint, facts: Sighting[]): Promise<v
     if (versions[key] || probed.has(key)) continue;
     // Keep active scanning to the in-scope host that fired the hook; a slug
     // read from another host's page is left to passive reporting.
-    if (s.host !== endpoint.host) continue;
+    if (s.host !== url.host) continue;
     if (!wpSites.has(s.host)) continue;
     if (perEvent >= maxProbesPerEvent || activeProbes >= maxActiveProbes) break;
     probed.add(key);
     perEvent++;
-    await probe(endpoint.scheme, s);
+    await probe(url.scheme, s);
   }
 }
 
@@ -164,7 +164,7 @@ async function probe(scheme: string, s: Sighting): Promise<void> {
     try {
       // Sent with record so the probe shows in the Traffic list — an active
       // scan should be auditable — but not through the proxy, so it doesn't
-      // wait on interception or re-enter the Map.
+      // wait on interception or re-enter the Explorer.
       res = await http.send({ url: p.url }, { record: true, timeoutMs: probeTimeoutMs });
     } catch (e) {
       log.debug(`version probe ${p.url} failed: ${e}`);
@@ -238,8 +238,8 @@ function better(s: Sighting, than: Sighting): boolean {
   return !than.flowId && !!s.flowId;
 }
 
-/** pages picks the responses to read for an endpoint, newest requests first. */
-function pages(e: Endpoint): Flow[] {
+/** pages picks the responses to read for a URL, newest requests first. */
+function pages(e: Url): Flow[] {
   const ids: number[] = [];
   const want = (id: number): void => {
     if (id && ids.length < maxPages && ids.indexOf(id) < 0 && !scanned.has(id)) ids.push(id);

@@ -22,14 +22,14 @@ function byValue(value: string): Finding | undefined {
   return mock.findings().filter((f) => f.value === value)[0];
 }
 
-describe("onEndpoint", () => {
+describe("onUrl", () => {
   it("records the site, its core version, its plugins and its theme", async () => {
     const flow = mock.flow({
       url: "https://blog.test/",
       responseHeaders: { "Content-Type": "text/html", "X-Pingback": "https://blog.test/xmlrpc.php" },
       responseBody: page,
     });
-    expect(await mock.dispatch("endpoint.on_discovered", flow)).toBe(1);
+    expect(await mock.dispatch("url.on_created", flow)).toBe(1);
 
     expect(values()).toEqual([
       "WordPress (blog.test)",
@@ -56,21 +56,21 @@ describe("onEndpoint", () => {
     expect(theme?.notes).toContain("version 1.2");
   });
 
-  it("reads an endpoint core only discovered: the author archive the page linked to", async () => {
-    await mock.dispatch("endpoint.on_discovered", {
+  it("reads a URL core only discovered: the author archive the page linked to", async () => {
+    await mock.dispatch("url.on_created", {
       url: "https://blog.test/",
       responseHeaders: { "Content-Type": "text/html" },
       responseBody: page,
     });
-    const author = mock.endpoints().filter((e) => e.path === "/author/jdoe")[0];
+    const author = mock.entities().filter((e) => e.type === "url" && e.path === "/author/jdoe")[0];
     expect(author.visited).toBe(false);
 
-    expect(await mock.dispatch("endpoint.on_discovered", author)).toBe(1);
+    expect(await mock.dispatch("url.on_created", author)).toBe(1);
     expect(byValue("jdoe (blog.test)")?.types).toEqual(["wordpress-user"]);
   });
 
   it("records what the REST API gives away", async () => {
-    await mock.dispatch("endpoint.on_discovered", {
+    await mock.dispatch("url.on_created", {
       url: "https://blog.test/wp-json/",
       responseHeaders: { "Content-Type": "application/json" },
       responseBody: JSON.stringify({
@@ -84,7 +84,7 @@ describe("onEndpoint", () => {
   });
 
   it("records the accounts the users route lists", async () => {
-    await mock.dispatch("endpoint.on_discovered", {
+    await mock.dispatch("url.on_created", {
       url: "https://blog.test/wp-json/wp/v2/users",
       responseHeaders: { "Content-Type": "application/json" },
       responseBody: JSON.stringify([{ id: 1, name: "Jane Doe", slug: "jane" }]),
@@ -98,7 +98,7 @@ describe("onEndpoint", () => {
 
   it("leaves users and namespaces out when the user turns them off", async () => {
     mock.settings({ record_users: false, record_rest_namespaces: false });
-    await mock.dispatch("endpoint.on_discovered", {
+    await mock.dispatch("url.on_created", {
       url: "https://blog.test/wp-json/",
       responseHeaders: { "Content-Type": "application/json" },
       responseBody: JSON.stringify({ namespaces: ["woocommerce/v3"], author_name: "jane" }),
@@ -108,7 +108,7 @@ describe("onEndpoint", () => {
 
   it("reads only the paths when reading responses is off", async () => {
     mock.settings({ read_pages: false });
-    await mock.dispatch("endpoint.on_discovered", {
+    await mock.dispatch("url.on_created", {
       url: "https://blog.test/wp-content/plugins/akismet/_inc/akismet.js?ver=5.3.1",
       responseHeaders: { "Content-Type": "application/javascript" },
       responseBody: "//",
@@ -119,7 +119,7 @@ describe("onEndpoint", () => {
   });
 
   it("takes an asset's version from the request that fetched it", async () => {
-    await mock.dispatch("endpoint.on_discovered", {
+    await mock.dispatch("url.on_created", {
       url: "https://blog.test/wp-content/plugins/akismet/_inc/akismet.js?ver=5.3.1",
       responseHeaders: { "Content-Type": "application/javascript" },
       responseBody: "//",
@@ -130,7 +130,7 @@ describe("onEndpoint", () => {
 
   it("says nothing about a site that isn't WordPress", async () => {
     expect(
-      await mock.dispatch("endpoint.on_discovered", {
+      await mock.dispatch("url.on_created", {
         url: "https://shop.test/products/12",
         responseHeaders: { "Content-Type": "text/html" },
         responseBody: `<html><head><meta name="generator" content="Hugo"></head>
@@ -141,12 +141,12 @@ describe("onEndpoint", () => {
   });
 
   it("keeps a plugin found twice over — assets and a REST namespace — to one finding", async () => {
-    await mock.dispatch("endpoint.on_discovered", {
+    await mock.dispatch("url.on_created", {
       url: "https://blog.test/wp-content/plugins/jetpack/jetpack.js?ver=16.4",
       responseHeaders: { "Content-Type": "application/javascript" },
       responseBody: "//",
     });
-    await mock.dispatch("endpoint.on_discovered", {
+    await mock.dispatch("url.on_created", {
       url: "https://blog.test/wp-json/",
       responseHeaders: { "Content-Type": "application/json" },
       responseBody: JSON.stringify({ namespaces: ["wp/v2", "jetpack/v4", "jetpack/v4/blaze"] }),
@@ -157,23 +157,23 @@ describe("onEndpoint", () => {
     expect(jetpack?.notes).toContain("registers the namespace jetpack");
   });
 
-  it("records each thing once, however often the endpoint comes round", async () => {
+  it("records each thing once, however often the URL comes round", async () => {
     const flow = mock.flow({
       url: "https://blog.test/",
       responseHeaders: { "Content-Type": "text/html" },
       responseBody: page,
     });
-    const endpoint = mock.endpoint(flow);
-    await mock.dispatch("endpoint.on_discovered", endpoint);
+    const url = mock.entity(flow);
+    await mock.dispatch("url.on_created", url);
     const first = mock.findings().length;
-    await mock.dispatch("endpoint.on_discovered", endpoint);
-    await mock.dispatch("endpoint.on_updated", endpoint);
+    await mock.dispatch("url.on_created", url);
+    await mock.dispatch("url.on_updated", url);
     expect(mock.findings()).toHaveLength(first);
   });
 
   it("keeps a plugin to one finding when its version turns up later", async () => {
-    // The asset endpoint on its own: a slug, no version.
-    await mock.dispatch("endpoint.on_discovered", {
+    // The asset URL on its own: a slug, no version.
+    await mock.dispatch("url.on_created", {
       url: "https://blog.test/wp-content/plugins/akismet/_inc/akismet.js",
       responseHeaders: { "Content-Type": "application/javascript" },
       responseBody: "//",
@@ -181,7 +181,7 @@ describe("onEndpoint", () => {
     expect(values()).toEqual(["WordPress (blog.test)", "akismet (blog.test)"]);
 
     // Then a page that states it.
-    await mock.dispatch("endpoint.on_discovered", {
+    await mock.dispatch("url.on_created", {
       url: "https://blog.test/",
       responseHeaders: { "Content-Type": "text/html" },
       responseBody: page,
@@ -195,26 +195,26 @@ describe("onEndpoint", () => {
 });
 
 describe("the hooks it is on", () => {
-  it("is called for every endpoint put on the Map", async () => {
+  it("is called for every URL put in the Explorer", async () => {
     expect(
-      await mock.dispatch("endpoint.on_discovered", { url: "https://shop.test/products/12" }),
+      await mock.dispatch("url.on_created", { url: "https://shop.test/products/12" }),
     ).toBe(1);
   });
 
   it("is called again only for the paths that keep saying something new", async () => {
-    const rest = mock.endpoint({
+    const rest = mock.entity({
       url: "https://blog.test/wp-json/wp/v2/users",
       responseHeaders: { "Content-Type": "application/json" },
       responseBody: "[]",
     });
-    expect(await mock.dispatch("endpoint.on_updated", rest)).toBe(1);
+    expect(await mock.dispatch("url.on_updated", rest)).toBe(1);
 
-    const other = mock.endpoint({ url: "https://blog.test/shop/", responseBody: "<html></html>" });
-    expect(await mock.dispatch("endpoint.on_updated", other)).toBe(0);
+    const other = mock.entity({ url: "https://blog.test/shop/", responseBody: "<html></html>" });
+    expect(await mock.dispatch("url.on_updated", other)).toBe(0);
   });
 
   it("never sends a request of its own", async () => {
-    await mock.dispatch("endpoint.on_discovered", {
+    await mock.dispatch("url.on_created", {
       url: "https://blog.test/",
       responseHeaders: { "Content-Type": "text/html" },
       responseBody: page,
@@ -240,7 +240,7 @@ describe("active version scanning", () => {
       body: "=== Contact Form 7 ===\nStable tag: 5.9.2\n",
     });
 
-    await mock.dispatch("endpoint.on_discovered", {
+    await mock.dispatch("url.on_created", {
       url: "https://blog.test/",
       responseHeaders: { "Content-Type": "text/html" },
       responseBody: cfPage,
@@ -265,7 +265,7 @@ describe("active version scanning", () => {
       body: "/*\nTheme Name: Storefront\nVersion: 3.9.1\n*/\n",
     });
 
-    await mock.dispatch("endpoint.on_discovered", {
+    await mock.dispatch("url.on_created", {
       url: "https://blog.test/",
       responseHeaders: { "Content-Type": "text/html" },
       responseBody: `<meta name="generator" content="WordPress 6.4.3" />
@@ -277,7 +277,7 @@ describe("active version scanning", () => {
   });
 
   it("sends nothing while the setting is off", async () => {
-    await mock.dispatch("endpoint.on_discovered", {
+    await mock.dispatch("url.on_created", {
       url: "https://blog.test/",
       responseHeaders: { "Content-Type": "text/html" },
       responseBody: cfPage,
@@ -289,7 +289,7 @@ describe("active version scanning", () => {
   it("records no version when the file isn't there (404) or doesn't state one", async () => {
     mock.settings({ active_version_scan: true });
     // No mock.respond rule: the harness answers 404.
-    await mock.dispatch("endpoint.on_discovered", {
+    await mock.dispatch("url.on_created", {
       url: "https://blog.test/",
       responseHeaders: { "Content-Type": "text/html" },
       responseBody: cfPage,
@@ -308,8 +308,8 @@ describe("active version scanning", () => {
       responseHeaders: { "Content-Type": "text/html" },
       responseBody: cfPage,
     };
-    await mock.dispatch("endpoint.on_discovered", ep);
-    await mock.dispatch("endpoint.on_updated", ep);
+    await mock.dispatch("url.on_created", ep);
+    await mock.dispatch("url.on_updated", ep);
     expect(mock.sent().filter((r) => r.url.indexOf("contact-form-7") >= 0)).toHaveLength(1);
   });
 });

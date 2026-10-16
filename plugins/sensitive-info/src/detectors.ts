@@ -1,246 +1,490 @@
-// The detectors: what counts as sensitive, and how to find it.
+// What counts as sensitive, and how a message is searched for it.
 //
-// Every pattern is RE2 (Go's regular expressions) and runs in Go through
-// text.scan, which is far faster than the same work in the plugin's own
-// code. A detector's value is the whole match, or the group it names; some
-// check what they found before it counts (a valid base64 Basic credential,
-// enough entropy for a generic key, an email domain not ignored).
+// A message is read in three parts — the query string of its URL, where a
+// credential is a finding in itself, its headers, and its body — and each
+// is searched by composed RE2 patterns that run in Go through text.scan
+// (see pattern.ts). The head and the query are small, so all of the
+// patterns are run over all of them.
+//
+// A body is not small, and Go's regexp has no literal to jump between when
+// a pattern is a large alternation: measured on a 512 KiB body, the
+// patterns for named fields alone cost over half a second, which no plugin
+// may spend. So the body is scanned in two ways:
+//
+//   - A format with a literal in it (AKIA, -----BEGIN, $2y$, "password")
+//     is anchored: one indexOf over a lower-cased copy says whether the
+//     literal is in the body at all — 50 of those over 512 KiB cost about
+//     7 ms — and the patterns are then run only on the windows of text
+//     around the places it was found. The work is bounded by the window
+//     budget rather than by the size of the body.
+//   - A format with nothing to anchor on (an email address, a card number,
+//     an SSN) has to be looked for everywhere, so those patterns — all of
+//     them small — are run over the body up to a smaller limit of their
+//     own (Options.maxPii).
+//
+// What this costs is covered by a test (test/cost.test.ts), which is the
+// thing to re-run after touching a pattern.
 
-import { text } from "reproxy";
-import { entropy } from "./entropy";
+import { log } from "reproxy";
+import { classify, FIELD_ANCHORS, FIELD_BRANCHES } from "./fields";
+import {
+  branches,
+  byId,
+  HASH_RULES,
+  HEADER_RULES,
+  HEX_HASH_RULE,
+  isSecret,
+  KEY_RULES,
+  PII_RULES,
+  type FindingType,
+  type Rule,
+} from "./formats";
 import { decodeClaims } from "./jwt";
-
-/** A finding type this plugin declares (see plugin.json). */
-export type FindingType = "credential" | "secret-key" | "token" | "personal-data";
-
-export interface Detector {
-  id: string;
-  label: string;
-  type: FindingType;
-  pattern: string;
-  /** The group holding the value; 0 for the whole match. */
-  group: number;
-  /** The group holding the field's name, if any. */
-  keyGroup?: number;
-  /** Where to look. */
-  where: "header" | "body" | "any";
-  /** Turns a match into the value to record, or null to drop it. */
-  check?: (value: string, opts: Options) => string | null;
-  /** Only reported when another detector also hit in the same message. */
-  needs?: string;
-}
+import { compose, scan as scanPattern, type Composed, type Found } from "./pattern";
+import { decodeBase64, digits, isPlaceholder, luhn, plausiblePhone, plausibleSsn, validIban } from "./validate";
 
 export interface Options {
+  /** The detectors (ids) or categories (finding types) to run; empty: all. */
   detectors: string[];
+  /** Detectors or categories never to run. */
+  skip: string[];
   minEntropy: number;
+  /** The most of a body that is read at all. */
   maxBody: number;
+  /** The most of a body the patterns that can't be anchored are run over. */
+  maxPii: number;
   ignoreEmails: string[];
+  ignoreValues: string[];
+  hexHashes: boolean;
+  /** The most hits one message may yield. */
+  maxHits: number;
 }
+
+/** Where in a message something was found. */
+export type Where = "header" | "query" | "body";
 
 export interface Hit {
   detector: string;
   label: string;
   type: FindingType;
+  /** The secret itself: a finding's identity. */
   value: string;
+  /** The field it was in, if it was in one. */
   key: string;
-  inHeader: boolean;
-  /** Extra key/value detail for the finding, e.g. a JWT's decoded claims. */
+  where: Where;
+  /** True when the value is a secret in itself, so it is recorded hidden. */
+  secret: boolean;
+  /** What the finding's notes should add about the risk. */
+  note?: string;
+  /** Extra detail for the finding, such as a JWT's claims. */
   fields?: Record<string, string>;
 }
 
-const FIELD_PASSWORD = `pass(?:word|wd|phrase)?|pwd|passwd`;
-const FIELD_USER = `user(?:name)?|login|email|e-mail`;
+/** One side of an exchange, as scan reads it. */
+export interface Input {
+  side: "request" | "response";
+  /** The start line and headers. */
+  head?: string;
+  /** The query string of the request's URL, without the "?". */
+  query?: string;
+  body?: string;
+}
 
-export const DETECTORS: Detector[] = [
-  {
-    id: "password",
-    label: "Password",
-    type: "credential",
-    // form fields and JSON members named like a password
-    pattern: `(?i)(?:^|[&?\\s"'{,])"?((?:[a-z_]*?)(?:${FIELD_PASSWORD})[a-z_]*)"?\\s*(?:=|:\\s*")([^&"\\s][^&"\\r\\n]{0,199})`,
-    group: 2,
-    keyGroup: 1,
-    where: "body",
-    check: (v) => (/^[*•x]+$/i.test(v) || v === "null" ? null : decodeForm(v)),
-  },
-  {
-    id: "username",
-    label: "Username",
-    type: "credential",
-    pattern: `(?i)(?:^|[&?\\s"'{,])"?(${FIELD_USER})"?\\s*(?:=|:\\s*")([^&"\\s][^&"\\r\\n]{0,199})`,
-    group: 2,
-    keyGroup: 1,
-    where: "body",
-    needs: "password", // a username only matters next to a password
-    check: (v) => decodeForm(v),
-  },
-  {
-    id: "basic_auth",
-    label: "HTTP Basic credentials",
-    type: "credential",
-    pattern: `(?im)^(?:proxy-)?authorization:[ \\t]*basic[ \\t]+([A-Za-z0-9+/=]{4,})`,
-    group: 1,
-    where: "header",
-    check: (v) => {
-      try {
-        const plain = atob(v);
-        return plain.indexOf(":") > 0 ? plain : null;
-      } catch {
-        return null;
-      }
-    },
-  },
-  {
-    id: "bearer",
-    label: "Bearer token",
-    type: "token",
-    pattern: `(?im)^authorization:[ \\t]*bearer[ \\t]+([A-Za-z0-9\\-._~+/]{8,}=*)`,
-    group: 1,
-    where: "header",
-  },
-  {
-    id: "jwt",
-    label: "JSON Web Token",
-    type: "token",
-    pattern: `\\beyJ[A-Za-z0-9_-]{5,}\\.eyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]*`,
-    group: 0,
-    where: "any",
-  },
-  {
-    id: "aws_key",
-    label: "AWS access key",
-    type: "secret-key",
-    pattern: `\\b(?:AKIA|ASIA)[0-9A-Z]{16}\\b`,
-    group: 0,
-    where: "any",
-  },
-  {
-    id: "github_token",
-    label: "GitHub token",
-    type: "secret-key",
-    pattern: `\\b(?:gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{22,255})\\b`,
-    group: 0,
-    where: "any",
-  },
-  {
-    id: "slack_token",
-    label: "Slack token",
-    type: "secret-key",
-    pattern: `\\bxox[baprs]-[A-Za-z0-9-]{10,}\\b`,
-    group: 0,
-    where: "any",
-  },
-  {
-    id: "stripe_key",
-    label: "Stripe secret key",
-    type: "secret-key",
-    pattern: `\\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\\b`,
-    group: 0,
-    where: "any",
-  },
-  {
-    id: "google_api_key",
-    label: "Google API key",
-    type: "secret-key",
-    pattern: `\\bAIza[0-9A-Za-z_-]{35}\\b`,
-    group: 0,
-    where: "any",
-  },
-  {
-    id: "private_key",
-    label: "Private key",
-    type: "secret-key",
-    pattern: `-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----[A-Za-z0-9+/=\\s:,.-]+?-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----`,
-    group: 0,
-    where: "body",
-  },
-  {
-    id: "api_key",
-    label: "API key",
-    type: "secret-key",
-    // name = value / "name": "value" assignments of key-like names
-    pattern: `(?i)["']?((?:x-)?(?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret|secret[_-]?key|app[_-]?secret|private[_-]?token))["']?\\s*(?:[:=]|:\\s*")\\s*["']?([A-Za-z0-9_\\-.=+/]{16,200})`,
-    group: 2,
-    keyGroup: 1,
-    where: "any",
-    check: (v, o) => (entropy(v) >= o.minEntropy ? v : null),
-  },
-  {
-    id: "email",
-    label: "Email address",
-    type: "personal-data",
-    pattern: `\\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}\\.[A-Za-z]{2,24}\\b`,
-    group: 0,
-    where: "body",
-    check: (v, o) => {
-      const domain = v.slice(v.indexOf("@") + 1).toLowerCase();
-      // asset names such as logo@2x.png look like addresses
-      if (/\.(png|jpe?g|gif|svg|webp|css|js|ico)$/.test(domain)) return null;
-      for (const d of o.ignoreEmails) {
-        const ignored = d.toLowerCase();
-        if (domain === ignored || domain.endsWith("." + ignored)) return null;
-      }
-      return v;
-    },
-  },
+/** The field detectors, which have no rule of their own: their names and
+ *  checks are in fields.ts, and this is what the catalog and the settings
+ *  call them. */
+const FIELD_DETECTORS: { id: string; label: string; category: FindingType }[] = [
+  { id: "field_hash", label: "Password hash (named field)", category: "hash" },
+  { id: "field_salt", label: "Password salt", category: "hash" },
+  { id: "field_password", label: "Password", category: "credential" },
+  { id: "field_pin", label: "One-time or PIN code", category: "credential" },
+  { id: "field_api_key", label: "API key or secret", category: "secret-key" },
+  { id: "field_token", label: "Token", category: "token" },
+  { id: "field_session", label: "Session identifier", category: "token" },
+  { id: "field_card", label: "Payment card number", category: "payment-data" },
+  { id: "field_cvv", label: "Card security code", category: "payment-data" },
+  { id: "field_bank", label: "Bank account detail", category: "payment-data" },
+  { id: "field_gov_id", label: "Government identifier", category: "personal-data" },
+  { id: "field_dob", label: "Date of birth", category: "personal-data" },
+  { id: "field_phone", label: "Telephone number", category: "personal-data" },
+  { id: "field_email", label: "Email address", category: "personal-data" },
+  { id: "field_username", label: "User name", category: "credential" },
 ];
 
-function decodeForm(v: string): string {
-  try {
-    return decodeURIComponent(v.replace(/\+/g, " "));
-  } catch {
-    return v;
+/** Every detector's id, with the category (finding type) it belongs to. */
+export const CATALOG: { id: string; label: string; category: FindingType }[] = [
+  ...[...KEY_RULES, ...HASH_RULES, HEX_HASH_RULE, ...PII_RULES, ...HEADER_RULES].map((r) => ({
+    id: r.id,
+    label: r.label,
+    category: r.type,
+  })),
+  ...FIELD_DETECTORS,
+];
+
+/** enabled reports whether a detector runs, by its id or its category. */
+export function enabled(opts: Options, id: string, category: FindingType): boolean {
+  if (opts.skip.indexOf(id) >= 0 || opts.skip.indexOf(category) >= 0) return false;
+  if (opts.detectors.length === 0) return true;
+  return opts.detectors.indexOf(id) >= 0 || opts.detectors.indexOf(category) >= 0;
+}
+
+// The window budget: how much text around an anchor is scanned, how many
+// windows a body may yield, and how much they may come to in all. A body
+// with more candidates than this is sampled rather than read whole, which
+// is said in the log.
+const WINDOW_BEFORE = 80;
+const WINDOW_AFTER = 352;
+const MAX_WINDOWS = 48;
+const MAX_WINDOW_BYTES = 32 * 1024;
+const MAX_PER_ANCHOR = 8;
+
+// Windows are joined with a separator no pattern can match through, so one
+// scan covers all of them.
+const SEP = "\n\u0000\n";
+
+/** A literal to look for, and how much text around it to scan. */
+interface Needle {
+  text: string;
+  before: number;
+  after: number;
+}
+
+// The composed patterns and needles, rebuilt only when the settings that
+// shape them change. Composing is cheap, but a message is not the place to
+// do it.
+interface Sets {
+  /** The formats with a literal to anchor on. */
+  anchored: Composed;
+  /** The formats with nothing to anchor on. */
+  unanchored: Composed;
+  fields: Composed;
+  headers: Composed;
+  needles: Needle[];
+  rules: Record<string, Rule>;
+}
+let cache: { sig: string; sets: Sets } | null = null;
+
+/** reset drops what is cached between runs (see plugin.on_load). */
+export function reset(): void {
+  cache = null;
+}
+
+function sets(opts: Options): Sets {
+  const sig = `${opts.detectors.join(",")}|${opts.skip.join(",")}|${opts.hexHashes}`;
+  if (cache && cache.sig === sig) return cache.sets;
+
+  const keep = (rules: Rule[]) => rules.filter((r) => enabled(opts, r.id, r.type));
+  const formats = keep([...KEY_RULES, ...HASH_RULES]);
+  if (opts.hexHashes && enabled(opts, HEX_HASH_RULE.id, HEX_HASH_RULE.type)) {
+    formats.push(HEX_HASH_RULE);
   }
+  const anchored = formats.filter((r) => r.anchors && r.anchors.length > 0);
+  const unanchored = formats.filter((r) => !r.anchors || r.anchors.length === 0).concat(keep(PII_RULES));
+
+  const built: Sets = {
+    anchored: compose("anchored", branches(anchored)),
+    unanchored: compose("unanchored", branches(unanchored)),
+    fields: compose("fields", FIELD_BRANCHES),
+    headers: compose("headers", branches(keep(HEADER_RULES))),
+    needles: needlesOf(anchored),
+    rules: byId([...KEY_RULES, ...HASH_RULES, HEX_HASH_RULE, ...PII_RULES, ...HEADER_RULES]),
+  };
+  cache = { sig, sets: built };
+  return built;
+}
+
+/** needlesOf gathers what to look for in a body: every anchored rule's
+ *  literals, and the names a field detector could be called by. */
+function needlesOf(anchored: Rule[]): Needle[] {
+  const byText: Record<string, Needle> = {};
+  const want = (text: string, before: number, after: number) => {
+    const n = byText[text];
+    if (!n) {
+      byText[text] = { text, before, after };
+      return;
+    }
+    n.before = Math.max(n.before, before);
+    n.after = Math.max(n.after, after);
+  };
+  for (const r of anchored) {
+    for (const a of r.anchors ?? []) {
+      want(a, r.before ?? WINDOW_BEFORE, r.after ?? WINDOW_AFTER);
+    }
+  }
+  for (const a of FIELD_ANCHORS) {
+    want(a, WINDOW_BEFORE, WINDOW_AFTER);
+  }
+  const out: Needle[] = [];
+  for (const text in byText) out.push(byText[text]);
+  return out;
 }
 
 /**
- * scan finds the sensitive values in a message: its head (start line and
- * headers) and its body text, as the given side of an exchange.
+ * scan finds the sensitive values in one side of an exchange. Nothing it
+ * returns needs decoding or checking again: a hit is something to report.
  */
-export function scan(head: string, body: string, side: "request" | "response", opts: Options): Hit[] {
-  const enabled = DETECTORS.filter((d) => opts.detectors.indexOf(d.id) >= 0);
-  const hits: Hit[] = [];
+export function scan(input: Input, opts: Options): Hit[] {
+  const s = sets(opts);
+  const hits: Pending[] = [];
   const seen: Record<string, boolean> = {};
-  const byDetector: Record<string, boolean> = {};
+  const max = Math.min(200, Math.max(8, opts.maxHits * 4));
+  let credential = false;
 
-  for (const [part, isHead] of [
-    [head, true],
-    [body.length > opts.maxBody ? body.slice(0, opts.maxBody) : body, false],
-  ] as [string, boolean][]) {
-    if (!part) continue;
-    const here = enabled.filter((d) => d.where === "any" || (d.where === "header") === isHead);
-    if (here.length === 0) continue;
-    const matches = text.scan(
-      part,
-      here.map((d) => ({ name: d.id, pattern: d.pattern })),
+  const add = (hit: Pending | null): void => {
+    if (!hit || hits.length >= opts.maxHits) return;
+    // A window's own end, where the text of the next one begins.
+    const cut = hit.value.indexOf("\u0000");
+    if (cut >= 0) hit.value = hit.value.slice(0, cut).trim();
+    if (!hit.value || !enabled(opts, hit.detector, hit.type) || ignored(hit.value, opts)) return;
+    if (seen[hit.value]) return;
+    seen[hit.value] = true;
+    // A user name is not what makes a message a login: only something it
+    // can be paired with counts.
+    if (!hit.pending && (hit.type === "credential" || hit.type === "secret-key" || hit.type === "hash")) {
+      credential = true;
+    }
+    hits.push(hit);
+  };
+
+  // The query comes first because the request line repeats it inside the
+  // head: taking the query's own part first is what makes a credential in
+  // the URL read as one, rather than as something in the headers.
+  if (input.query) readAll(s, input.query, "query", max, opts, add);
+  if (input.head) {
+    for (const m of scanPattern(s.headers, input.head, max)) add(fromHeader(m, s.rules));
+    readAll(s, input.head, "header", max, opts, add);
+  }
+  if (input.body && hits.length < opts.maxHits) readBody(s, input.body, max, opts, add);
+
+  // A user name is only a login beside the password it was sent with, and
+  // only in a request: a response that echoes "username" is not a leak.
+  return hits.filter((h) => !h.pending || (credential && input.side === "request")).map(strip);
+}
+
+/** readAll runs every pattern over a part small enough for that: a head, a
+ *  query string, a WebSocket message. */
+function readAll(s: Sets, text: string, where: Where, max: number, opts: Options, add: (h: Pending | null) => void): void {
+  for (const m of scanPattern(s.anchored, text, max)) add(fromFormat(m, s.rules, where, opts));
+  for (const m of scanPattern(s.unanchored, text, max)) add(fromFormat(m, s.rules, where, opts));
+  for (const m of scanPattern(s.fields, text, max)) add(fromField(m, where, opts));
+}
+
+/** readBody scans a body the affordable way: the anchored patterns around
+ *  the literals they need, the rest over as much of the body as the
+ *  unanchored limit allows. */
+function readBody(s: Sets, body: string, max: number, opts: Options, add: (h: Pending | null) => void): void {
+  const text = body.length > opts.maxBody ? body.slice(0, opts.maxBody) : body;
+  const found = windows(text.toLowerCase(), s.needles);
+  if (found.ranges.length > 0) {
+    const parts: string[] = [];
+    for (const r of found.ranges) parts.push(text.slice(r[0], r[1]));
+    const joined = parts.join(SEP);
+    for (const m of scanPattern(s.anchored, joined, max)) add(fromFormat(m, s.rules, "body", opts));
+    for (const m of scanPattern(s.fields, joined, max)) add(fromField(m, "body", opts));
+  }
+  if (found.sampled) {
+    log.debug(
+      `a body of ${Math.round(text.length / 1024)} KiB held more candidates than the window budget: ` +
+        `${MAX_WINDOWS} places were read`,
     );
-    for (const m of matches) {
-      const d = here.find((x) => x.id === m.pattern)!;
-      let value = d.group === 0 ? m.match : m.groups[d.group - 1] || "";
-      value = value.trim();
-      if (d.check) {
-        const checked = d.check(value, opts);
-        if (checked === null) continue;
-        value = checked;
-      }
-      if (!value) continue;
-      const key = d.keyGroup ? m.groups[d.keyGroup - 1] || "" : "";
-      const id = d.id + "\u0000" + value;
-      if (seen[id]) continue;
-      seen[id] = true;
-      byDetector[d.id] = true;
-      const hit: Hit = { detector: d.id, label: d.label, type: d.type, value, key, inHeader: isHead };
-      if (d.id === "jwt" || (d.id === "bearer" && value.split(".").length === 3)) {
-        const claims = decodeClaims(value);
-        if (claims) hit.fields = claims;
-      }
-      hits.push(hit);
+  }
+  const pii = text.length > opts.maxPii ? text.slice(0, opts.maxPii) : text;
+  for (const m of scanPattern(s.unanchored, pii, max)) add(fromFormat(m, s.rules, "body", opts));
+}
+
+/** windows finds where in a (lower-cased) body the anchored patterns could
+ *  match, as merged ranges within the window budget. */
+export function windows(lower: string, needles: Needle[]): { ranges: [number, number][]; sampled: boolean } {
+  const raw: [number, number][] = [];
+  let sampled = false;
+  for (const n of needles) {
+    let from = 0;
+    for (let i = 0; i < MAX_PER_ANCHOR; i++) {
+      const at = lower.indexOf(n.text, from);
+      if (at < 0) break;
+      raw.push([Math.max(0, at - n.before), Math.min(lower.length, at + n.text.length + n.after)]);
+      from = at + n.text.length;
+      if (i === MAX_PER_ANCHOR - 1 && lower.indexOf(n.text, from) >= 0) sampled = true;
     }
   }
-  // A response echoing "username" back is not a login: keep those only
-  // beside what they need.
-  return hits.filter((h) => {
-    const d = DETECTORS.find((x) => x.id === h.detector)!;
-    return !d.needs || (byDetector[d.needs] && side === "request");
-  });
+  if (raw.length === 0) return { ranges: [], sampled };
+  raw.sort((a, b) => a[0] - b[0]);
+
+  const ranges: [number, number][] = [];
+  let bytes = 0;
+  for (const r of raw) {
+    const last = ranges.length > 0 ? ranges[ranges.length - 1] : null;
+    if (last && r[0] <= last[1]) {
+      if (r[1] > last[1]) {
+        bytes += r[1] - last[1];
+        last[1] = r[1];
+      }
+      continue;
+    }
+    if (ranges.length >= MAX_WINDOWS || bytes + (r[1] - r[0]) > MAX_WINDOW_BYTES) {
+      sampled = true;
+      break;
+    }
+    ranges.push([r[0], r[1]]);
+    bytes += r[1] - r[0];
+  }
+  return { ranges, sampled };
+}
+
+// pending marks a hit held back until the message turns out to hold a
+// credential too. It is dropped from what scan returns.
+interface Pending extends Hit {
+  pending?: boolean;
+}
+
+function strip(h: Pending): Hit {
+  const out: Hit = {
+    detector: h.detector,
+    label: h.label,
+    type: h.type,
+    value: h.value,
+    key: h.key,
+    where: h.where,
+    secret: isSecret(h.type, h.detector),
+  };
+  if (h.note) out.note = h.note;
+  if (h.fields) out.fields = h.fields;
+  return out;
+}
+
+function ignored(value: string, opts: Options): boolean {
+  if (isPlaceholder(value)) return true;
+  for (const v of opts.ignoreValues) {
+    if (v && value.toLowerCase() === v.toLowerCase()) return true;
+  }
+  return false;
+}
+
+/** fromHeader reads an Authorization line: the scheme decides what the
+ *  credential is, and Basic is decoded to the user and password it hides. */
+function fromHeader(m: Found, rules: Record<string, Rule>): Pending | null {
+  const bare = m.id === "auth_header_bare";
+  const scheme = bare ? "" : (m.groups[0] ?? "").toLowerCase();
+  const value = (bare ? m.groups[0] : m.groups[1] ?? "").trim();
+  if (!value) return null;
+  const base: Pending = {
+    detector: m.id,
+    label: rules[m.id].label,
+    type: "token",
+    value,
+    key: "Authorization",
+    where: "header",
+    secret: true,
+  };
+  switch (scheme) {
+    case "basic": {
+      const plain = decodeBase64(value);
+      if (plain && plain.indexOf(":") > 0) {
+        return {
+          ...base,
+          label: "HTTP Basic credentials",
+          type: "credential",
+          value: plain,
+          fields: { user: plain.slice(0, plain.indexOf(":")) },
+          note: "Basic authentication is the password itself, base64 encoded, on every request.",
+        };
+      }
+      return base;
+    }
+    case "digest":
+      return { ...base, label: "HTTP Digest credentials", type: "credential" };
+    case "ntlm":
+    case "negotiate":
+      return { ...base, label: "NTLM or Negotiate credential", type: "credential" };
+    default: {
+      const label = scheme ? `${scheme.charAt(0).toUpperCase()}${scheme.slice(1)} authorization credential` : base.label;
+      const hit: Pending = { ...base, label };
+      const claims = value.split(".").length === 3 ? decodeClaims(value) : null;
+      if (claims) {
+        hit.fields = claims;
+        hit.note = "Anyone holding the token can act as whoever it was issued to until it expires.";
+      }
+      return hit;
+    }
+  }
+}
+
+/** fromFormat turns a match of a shape-based rule into a hit, checking what
+ *  the shape alone can't tell (a card's check digit, an IBAN's checksum). */
+function fromFormat(m: Found, rules: Record<string, Rule>, where: Where, opts: Options): Pending | null {
+  const rule = rules[m.id];
+  if (!rule) return null;
+  let value = m.match.trim();
+  switch (m.id) {
+    case "email":
+      if (!keepEmail(value, opts)) return null;
+      break;
+    case "credit_card":
+      if (!luhn(value)) return null;
+      break;
+    case "ssn":
+      if (!plausibleSsn(value)) return null;
+      break;
+    case "iban":
+      if (!validIban(value)) return null;
+      break;
+    case "phone":
+      if (!plausiblePhone(value)) return null;
+      break;
+    case "uk_nino":
+      // A chance run of letters and digits inside a token looks like one.
+      if (digits(value).length !== 6) return null;
+      break;
+    case "private_key":
+      // A key is its own identity, but a finding needn't carry pages of it.
+      if (value.length > 4096) value = value.slice(0, 4096) + "…";
+      break;
+    case "azure_storage_key":
+      value = value.slice(value.indexOf("=") + 1);
+      break;
+  }
+  const hit: Pending = { detector: m.id, label: rule.label, type: rule.type, value, key: "", where, secret: true };
+  if (rule.note) hit.note = rule.note;
+  if (m.id === "jwt") {
+    const claims = decodeClaims(value);
+    if (claims) hit.fields = claims;
+  }
+  return hit;
+}
+
+/** fromField turns a "name = value" match into a hit, if the name means
+ *  anything and the value holds something. */
+function fromField(m: Found, where: Where, opts: Options): Pending | null {
+  const name = m.groups[0] ?? "";
+  const value = m.groups[1] ?? "";
+  if (!name || !value) return null;
+  const field = classify(name, value, opts.minEntropy);
+  if (!field) return null;
+  if (field.id === "field_email" && !keepEmail(field.value, opts)) return null;
+  const hit: Pending = {
+    detector: field.id,
+    label: field.label,
+    type: field.type,
+    value: field.value,
+    key: name.replace(/^["']|["']$/g, ""),
+    where,
+    secret: true,
+  };
+  if (field.note) hit.note = field.note;
+  if (field.needsCredential) hit.pending = true;
+  return hit;
+}
+
+/** keepEmail drops the addresses that aren't a person's: an ignored domain,
+ *  and the asset names (logo@2x.png) that look like one. */
+function keepEmail(value: string, opts: Options): boolean {
+  const at = value.indexOf("@");
+  if (at <= 0) return false;
+  const domain = value.slice(at + 1).toLowerCase();
+  if (/\.(?:png|jpe?g|gif|svg|webp|avif|css|js|mjs|ico|woff2?|ttf|map)$/.test(domain)) return false;
+  for (const d of opts.ignoreEmails) {
+    const ignored = d.toLowerCase().replace(/^@/, "");
+    if (ignored && (domain === ignored || domain.endsWith("." + ignored))) return false;
+  }
+  return true;
 }

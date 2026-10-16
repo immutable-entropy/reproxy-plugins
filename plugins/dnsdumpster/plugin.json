@@ -1,0 +1,58 @@
+{
+  "name": "dnsdumpster",
+  "version": "1.0-1",
+  "description": "Looks each domain you add to the targets up with DNSDumpster's API and lists the host names and IP addresses it knows of under Targets → Related, with their DNS details in the Entity Explorer. It sends the target's domain name to api.dnsdumpster.com, a third-party service, and needs your DNSDumpster API key (free accounts get one).",
+  "author": {
+    "name": "reProxy"
+  },
+  "status": "disabled",
+  "sdk": "1",
+  "targets": [
+    { "hook": "plugin.on_load", "function": "init" },
+    { "hook": "plugin.on_settings_change", "function": "onSettings" },
+    { "hook": "target.on_changed", "function": "onTargets" },
+    { "hook": "engagement.on_opened", "function": "onEngagement" }
+  ],
+  "settings": [
+    {
+      "key": "api_key",
+      "type": "secret",
+      "label": "DNSDumpster API key",
+      "description": "From your account page at dnsdumpster.com. It is kept in reProxy's secrets file, readable only by you, sent only to api.dnsdumpster.com, and never recorded in the traffic list."
+    },
+    {
+      "key": "include_ips",
+      "type": "boolean",
+      "label": "List the IP addresses too",
+      "description": "On: each address a name resolves to is listed as well, with its ASN, country and reverse name. Off: host names only.",
+      "default": true
+    },
+    {
+      "key": "include_cname",
+      "type": "boolean",
+      "label": "Include CNAME records",
+      "default": true
+    },
+    {
+      "key": "include_mx",
+      "type": "boolean",
+      "label": "Include mail servers (MX records)",
+      "description": "Usually a mail provider's hosts rather than the target's own.",
+      "default": false
+    },
+    {
+      "key": "include_ns",
+      "type": "boolean",
+      "label": "Include name servers (NS records)",
+      "description": "Usually a DNS provider's hosts rather than the target's own.",
+      "default": false
+    },
+    {
+      "key": "pages",
+      "type": "number",
+      "label": "Pages to fetch per domain",
+      "description": "A free account gets one page (50 records). A Plus account gets 200 records per page and can ask for more pages (at most 10); each takes one request, two seconds apart.",
+      "default": 1
+    }
+  ]
+}

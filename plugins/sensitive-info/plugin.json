@@ -1,7 +1,7 @@
 {
   "name": "sensitive-info",
-  "version": "1.0-1",
-  "description": "Scans requests and responses for credentials, tokens, keys and personal data, and records each as a finding linked to the request it was seen in.",
+  "version": "1.1",
+  "description": "Scans requests, responses and WebSocket messages for credentials, keys, tokens, password hashes and personal data — in headers, query strings and bodies — and records each as a finding linked to the request it was seen in. It only reads traffic: nothing is held, changed or sent.",
   "author": {
     "name": "Kayleigh",
     "email": null
@@ -12,9 +12,15 @@
     { "id": "credential", "name": "Credential", "color": "#d9534f" },
     { "id": "secret-key", "name": "Secret Key", "color": "#c2185b" },
     { "id": "token", "name": "Token", "color": "#ef6c00" },
-    { "id": "personal-data", "name": "Personal Data", "color": "#6a1b9a" }
+    { "id": "hash", "name": "Password Hash", "color": "#00796b" },
+    { "id": "personal-data", "name": "Personal Data", "color": "#6a1b9a" },
+    { "id": "payment-data", "name": "Payment Data", "color": "#1565c0" }
   ],
   "targets": [
+    {
+      "hook": "plugin.on_load",
+      "function": "load"
+    },
     {
       "hook": "traffic.on_request_forwarded",
       "function": "scanRequest",
@@ -29,49 +35,104 @@
           "text/*",
           "application/json",
           "application/*+json",
+          "application/x-ndjson",
           "application/javascript",
           "application/x-javascript",
+          "application/ecmascript",
           "application/xml",
           "application/*+xml",
           "application/x-www-form-urlencoded",
-          "application/graphql*"
+          "application/graphql*",
+          "application/x-amz-json*",
+          "application/csv",
+          "application/yaml",
+          "application/x-yaml",
+          "multipart/*"
         ]
       }
+    },
+    {
+      "hook": "websocket.on_message",
+      "function": "scanWebSocket",
+      "match": { "scope": "in_scope" }
     }
   ],
   "settings": [
     {
       "key": "detectors",
       "type": "list",
-      "label": "Detectors",
-      "description": "Which detectors run: password, username, basic_auth, bearer, jwt, aws_key, github_token, slack_token, stripe_key, google_api_key, private_key, api_key, email.",
-      "default": ["password", "username", "basic_auth", "bearer", "jwt", "aws_key", "github_token", "slack_token", "stripe_key", "google_api_key", "private_key", "api_key", "email"]
+      "label": "Detectors to run",
+      "description": "Leave empty to run every detector. Otherwise list detector ids (aws_access_key, field_password, …) or whole categories (credential, secret-key, token, hash, personal-data, payment-data). The plugin's README lists every id.",
+      "default": []
+    },
+    {
+      "key": "skip_detectors",
+      "type": "list",
+      "label": "Detectors to skip",
+      "description": "Detector ids or categories never to run, whatever the list above says. Use this to silence one noisy detector (email, phone) or a whole category.",
+      "default": []
     },
     {
       "key": "scan_requests",
       "type": "boolean",
       "label": "Scan requests",
-      "description": "Off: only responses are scanned.",
+      "description": "Off: only responses and WebSocket messages are scanned.",
       "default": true
     },
     {
       "key": "min_entropy",
       "type": "number",
       "label": "Minimum entropy for generic keys",
-      "description": "An api_key-style assignment is only flagged when its value is at least this random (bits per character).",
+      "description": "A value under a key-like name (api_key, token) is only flagged when it is at least this random (bits per character). Formats that name their issuer, such as an AWS or Stripe key, are reported whatever their entropy.",
       "default": 3.5
+    },
+    {
+      "key": "hex_hashes",
+      "type": "boolean",
+      "label": "Report bare hex hashes",
+      "description": "Off by default: MD5 and SHA-sized hex strings are everywhere (ETags, asset names, commit ids), so only hashes in a hash-named field or a known crypt format are reported. On, any 32, 40, 64 or 128-character hex string is a finding.",
+      "default": false
+    },
+    {
+      "key": "hide_secrets",
+      "type": "boolean",
+      "label": "Hide secret values",
+      "description": "A finding whose value is a secret in itself — a password, a key, a token, a hash, a card number, a national identifier — is recorded hidden, so reProxy masks it until you click the eye beside the value. Email addresses, telephone numbers and dates of birth are always left readable.",
+      "default": true
+    },
+    {
+      "key": "max_findings",
+      "type": "number",
+      "label": "Most findings from one message",
+      "description": "A directory page full of addresses should not become a hundred findings.",
+      "default": 25
     },
     {
       "key": "max_body_kb",
       "type": "number",
       "label": "Largest body scanned (KiB)",
+      "description": "Bodies bigger than this are left alone. Most of the scanning is cheap at any size: a format with a literal in it (AKIA, -----BEGIN, \"password\") is looked for with a plain text search first, and the patterns only run around what that finds.",
       "default": 512
+    },
+    {
+      "key": "max_pii_kb",
+      "type": "number",
+      "label": "Largest body scanned for personal data (KiB)",
+      "description": "An email address, a card number or an SSN has no fixed text to search for first, so those patterns have to read the body itself, which costs about 0.3 ms per KiB. This keeps that bounded; every other detector still covers the whole body.",
+      "default": 128
     },
     {
       "key": "ignore_emails",
       "type": "list",
       "label": "Email domains to ignore",
-      "default": ["example.com", "example.org", "example.net", "sentry.io", "w3.org"]
+      "default": ["example.com", "example.org", "example.net", "sentry.io", "w3.org", "schema.org", "googleapis.com"]
+    },
+    {
+      "key": "ignore_values",
+      "type": "list",
+      "label": "Values to ignore",
+      "description": "Exact values never to report: the test account's password, a sample key an API's documentation returns.",
+      "default": []
     }
   ]
 }

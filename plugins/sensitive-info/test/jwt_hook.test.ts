@@ -15,7 +15,7 @@ describe("JWT findings carry decoded claims", () => {
     for (const kv of f.fields) fields[kv.key] = kv.value;
     expect(fields["jwt.sub"]).toBe("1234567890");
     expect(fields["jwt.admin"]).toBe("true");
-    expect(fields["detector"]).toBe("bearer");
+    expect(fields["detector"]).toBe("auth_header");
   });
 
   it("decodes a JWT found in a response body", async () => {
