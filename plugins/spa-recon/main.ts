@@ -1,10 +1,13 @@
-// vue-spa: recognises a Vue single-page app and mines its Vite build.
+// spa-recon: recognises a single-page app — Vue/Nuxt, React/Next,
+// Svelte/SvelteKit or Angular (src/frameworks.ts) — and mines the build
+// behind it.
 //
 // It watches the traffic the browser already loaded. A page's HTML tells it
-// whether a Vue app (or Nuxt) is being served and whether Vite built the
-// assets (src/detect.ts); the module bundles it pulls in may name a source
-// map. On an in-scope host it then goes a step further, with requests of
-// its own (so it is active, and disabled until enabled):
+// which framework is being served and whether a bundler (Vite, or any build
+// that preloads hashed modules) made the assets (src/detect.ts); the module
+// bundles it pulls in may name a source map. On an in-scope host it then
+// goes a step further, with requests of its own (so it is active, and
+// disabled until enabled):
 //
 //   - it fetches any exposed source map (src/sourcemap.ts) and recovers the
 //     application's own source files, the exact framework and build
@@ -13,19 +16,22 @@
 //   - it looks for Vite's build manifest (src/manifest.ts), which lists
 //     every built chunk, stylesheet and asset.
 //
-// What it learns becomes findings — a Vue SPA, an exposed source map, an
-// exposed build manifest, each framework version — and the hosts and URLs
-// it turns up are added to the Entity Explorer, where off-target ones show
-// under Targets → Related. Its own requests are recorded in the traffic
-// list (the tester can see exactly what was fetched) and, like every
-// plugin's traffic, go out through the configured upstream proxy chain.
+// What it learns becomes findings — the SPA and its framework, an exposed
+// source map, an exposed build manifest, each framework version — and the
+// hosts and URLs it turns up are added to the Entity Explorer, where
+// off-target ones show under Targets → Related. Its own requests are
+// recorded in the traffic list (the tester can see exactly what was
+// fetched) and, like every plugin's traffic, go out through the configured
+// upstream proxy chain.
 //
 // Work is remembered per engagement: a manifest is looked for once per
 // origin, a map fetched once, whether the app restarts or not.
 
-import { entities, findings, http, log, settings, storage, targets, text, type Flow, type Hooks, type Message, type Response } from "reproxy";
-import { detectHtml, sourceMapRef, type Asset } from "./src/detect";
-import { appSources, frameworkVersions, mapNamesVue, readSourceMap } from "./src/sourcemap";
+import { entities, findings, http, log, settings, storage, targets, text, type ActionHandler, type Flow, type Hooks, type Message, type Response } from "reproxy";
+import { anyFramework, detectHtml, sourceMapRef, type Asset } from "./src/detect";
+import { appSources, frameworkVersions, mapFramework, readSourceMap, type SourceMap } from "./src/sourcemap";
+import { label, nameOf } from "./src/frameworks";
+import { recoverFiles } from "./src/reconstruct";
 import { MANIFEST_PATHS, readViteManifest } from "./src/manifest";
 import { authorityOf, dirOf, originOf, resolveUrl } from "./src/url";
 
@@ -38,7 +44,7 @@ let gapMs = 150;
 let lastSend = 0;
 
 // Session state, reset by load.
-const spaHosts = new Set<string>(); // hosts recorded as a Vue SPA this run
+const spaHosts = new Set<string>(); // hosts recorded as an SPA this run
 const triedMaps = new Set<string>(); // map URLs fetched or in flight this run
 const triedOrigins = new Set<string>(); // origins whose manifest was looked for this run
 let chain: Promise<unknown> = Promise.resolve();
@@ -58,15 +64,15 @@ export function idle(): Promise<unknown> {
   return chain;
 }
 
-// ---- HTML: is this a Vue/Vite app, and what does it load? ---------------------
+// ---- HTML: is this an SPA, and what does it load? -----------------------------
 
 export function inspectHtml({ flow }: Hooks["traffic.on_response_received"]): void {
   const html = body(flow.response, kib("max_html_kb", 1024));
   if (!html) return;
   const facts = detectHtml(html, kib("max_html_kb", 1024));
-  if (!facts.vue && !facts.vite) return;
+  if (!anyFramework(facts) && !facts.bundled) return;
 
-  if (facts.vue && !spaHosts.has(flow.host)) {
+  if (anyFramework(facts) && !spaHosts.has(flow.host)) {
     spaHosts.add(flow.host);
     recordSPA(flow, facts);
   }
@@ -74,7 +80,7 @@ export function inspectHtml({ flow }: Hooks["traffic.on_response_received"]): vo
   // The assets the page loads go in the Explorer whether or not we probe.
   for (const a of facts.assets) {
     const abs = resolveUrl(flow.url, a.ref);
-    if (abs) addUrlSafe(abs, flow.id, `vue-spa:${a.kind}`);
+    if (abs) addUrlSafe(abs, flow.id, `spa-recon:${a.kind}`);
   }
 
   if (!active(flow.url)) return;
@@ -90,15 +96,15 @@ export function inspectHtml({ flow }: Hooks["traffic.on_response_received"]): vo
 }
 
 function recordSPA(flow: Flow, facts: ReturnType<typeof detectHtml>): void {
-  const framework = facts.nuxt ? "Nuxt (Vue)" : "Vue.js";
+  const framework = facts.frameworks.length ? label(facts.frameworks[0]) : "Unknown";
   findings
     .record({
-      value: `Vue single-page app on ${flow.host}`,
-      types: ["vue-spa"],
+      value: `Single-page app (${framework}) on ${flow.host}`,
+      types: ["spa"],
       notes:
         `${framework} is served at ${flow.scheme}://${flow.host}. Detected from: ${facts.signals.join("; ")}. ` +
-        `A single-page app runs its logic in the browser, so its routes, client-side checks and API calls are all in the JavaScript it ships — worth reading, especially if a source map or the Vite build manifest is exposed.`,
-      fields: { host: flow.host, framework, build: facts.vite ? "Vite" : "unknown", signals: facts.signals.join(", ") },
+        `A single-page app runs its logic in the browser, so its routes, client-side checks and API calls are all in the JavaScript it ships — worth reading, especially if a source map or the build manifest is exposed.`,
+      fields: { host: flow.host, framework, build: facts.vite ? "Vite" : facts.bundled ? "bundler" : "unknown", signals: facts.signals.join(", ") },
       flowId: flow.id,
       location: "response_body",
     })
@@ -155,7 +161,7 @@ async function considerMap(mapUrl: string, fromUrl: string): Promise<void> {
     if (cap > 0) {
       // The map is JSON, but the URLs worth having are buried in its source
       // content, so it is scanned as script text, not parsed as JSON.
-      for (const u of text.urls(res.text(), mapUrl, "application/javascript", cap)) addUrlSafe(u, undefined, "vue-spa:source-map", fromUrl);
+      for (const u of text.urls(res.text(), mapUrl, "application/javascript", cap)) addUrlSafe(u, undefined, "spa-recon:source-map", fromUrl);
     }
   }
 }
@@ -167,16 +173,19 @@ async function recordMap(mapUrl: string, fromUrl: string, flowId: number, map: R
   if (map) {
     const app = appSources(map);
     const deps = frameworkVersions(map);
-    // A client-rendered Vue SPA's HTML names nothing; the map confirms it.
+    // A client-rendered SPA's HTML names nothing; the map confirms the
+    // framework by what it imports from node_modules.
     const host = authorityOf(fromUrl);
-    if (host && !spaHosts.has(host) && mapNamesVue(map)) {
+    const fw = mapFramework(map);
+    if (host && fw && !spaHosts.has(host)) {
       spaHosts.add(host);
+      const framework = nameOf(fw);
       findings
         .record({
-          value: `Vue single-page app on ${host}`,
-          types: ["vue-spa"],
-          notes: `Vue.js is served at ${host}, confirmed from the source map ${mapUrl} (it names Vue in the build). The application's client source can be recovered from the map.`,
-          fields: { host, framework: "Vue.js", build: "Vite", signals: `source map ${mapUrl}` },
+          value: `Single-page app (${framework}) on ${host}`,
+          types: ["spa"],
+          notes: `${framework} is served at ${host}, confirmed from the source map ${mapUrl} (it names ${framework} in the build). The application's client source can be recovered from the map.`,
+          fields: { host, framework, build: "bundler", signals: `source map ${mapUrl}` },
           flowId: flowId || undefined,
           location: flowId ? "response_body" : undefined,
         })
@@ -201,6 +210,83 @@ async function recordMap(mapUrl: string, fromUrl: string, flowId: number, map: R
     await findings.record({ value: mapUrl, types: ["source-map"], notes, fields, flowId: flowId || undefined, location: flowId ? "response_body" : undefined });
   } catch (err) {
     log.error(`recording the source map: ${String(err)}`);
+  }
+}
+
+// ---- Action: recover the source from a map ------------------------------------
+
+// Run from the traffic list's right-click menu on a bundle or a .map. It
+// reconstructs the original source files the map embeds ("un-webpacking"),
+// then mines every recovered file for the URLs and API endpoints it
+// references — far more than the passive scan of the raw map does, because
+// each file is read as its own source with the site as the base, so a
+// relative "/api/..." becomes a real URL in the Explorer. The standard
+// source-map finding and version findings are recorded too, so the action
+// stands on its own if the passive hooks never ran.
+export const recoverSources: ActionHandler = async ({ flow }) => {
+  const got = await obtainMap(flow);
+  if (!got) return "No source map found for this flow (no sourcesContent to recover).";
+  const { mapUrl, map, fromUrl, flowId } = got;
+
+  const files = recoverFiles(map);
+  if (files.length === 0) return `${mapUrl} is a source map, but carries no embedded source (sourcesContent) to recover.`;
+
+  // Mine each app file for the URLs it references, resolved against the site.
+  const origin = originOf(fromUrl) || originOf(mapUrl);
+  const seen = new Set<string>();
+  let urls = 0;
+  const overall = 5000;
+  for (const f of files) {
+    if (!f.app || urls >= overall) continue;
+    for (const u of text.urls(f.content, origin, "application/javascript", 300)) {
+      if (seen.has(u)) continue;
+      seen.add(u);
+      addUrlSafe(u, flowId || undefined, `spa-recon:source ${f.path}`, fromUrl);
+      if (++urls >= overall) break;
+    }
+  }
+
+  // Record the exposed-map finding (and versions, and the framework confirmation)
+  // the same way the passive path would, so a deliberate run is complete.
+  await recordMap(mapUrl, fromUrl, flowId, map);
+
+  const app = files.filter((f) => f.app).length;
+  log.info(`recovered ${files.length} source files from ${mapUrl} (${app} app); mined ${urls} URLs into the Explorer`);
+  return `Recovered ${files.length} source files (${app} the app's own); added ${urls} URLs to the Explorer.`;
+};
+
+/** The map behind a flow: its own body if it is one, else the map its bundle names. */
+async function obtainMap(flow: Flow): Promise<{ mapUrl: string; map: SourceMap; fromUrl: string; flowId: number } | undefined> {
+  const maxMapBytes = Math.max(1, Math.floor(Number(settings.get<number>("max_map_mb")) || 12)) * 1024 * 1024;
+  const self = body(flow.response, maxMapBytes);
+  // The flow may already be the .map.
+  const asMap = self ? readSourceMap(parse(self)) : undefined;
+  if (asMap) return { mapUrl: flow.url, map: asMap, fromUrl: flow.url, flowId: flow.id };
+
+  // Otherwise it is a bundle: follow its sourceMappingURL, or try url + ".map".
+  const refs: string[] = [];
+  const ref = self ? sourceMapRef(self) : undefined;
+  if (ref) {
+    const abs = resolveUrl(dirOf(flow.url), ref);
+    if (abs) refs.push(abs);
+  }
+  refs.push(flow.url.replace(/[?#].*$/, "") + ".map");
+
+  for (const mapUrl of refs) {
+    const res = await get(mapUrl);
+    if (!res || !res.ok) continue;
+    const map = readSourceMap(res.json());
+    if (map) return { mapUrl, map, fromUrl: flow.url, flowId: res.flowId };
+  }
+  return undefined;
+}
+
+/** JSON.parse that returns undefined rather than throwing on bad input. */
+function parse(s: string): unknown {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return undefined;
   }
 }
 
@@ -243,7 +329,7 @@ async function recordManifest(url: string, vm: ReturnType<typeof readViteManifes
     // site root they are served from.
     const abs = resolveUrl(siteRoot, file.replace(/^\/+/, ""));
     if (abs) {
-      addUrlSafe(abs, undefined, "vue-spa:manifest", flow.url);
+      addUrlSafe(abs, undefined, "spa-recon:manifest", flow.url);
       added++;
     }
   }
@@ -326,7 +412,7 @@ async function remember(key: string, value: string, flag?: boolean): Promise<voi
 
 /** Run fn after everything queued before it, so active probes go one at a time. */
 function queue(fn: () => Promise<void>): void {
-  chain = chain.then(fn).catch((err) => log.error(`vue-spa: ${String(err)}`));
+  chain = chain.then(fn).catch((err) => log.error(`spa-recon: ${String(err)}`));
 }
 
 function kib(key: string, dflt: number): number {

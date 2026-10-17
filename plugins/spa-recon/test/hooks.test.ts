@@ -61,15 +61,15 @@ describe("inspectHtml on an in-scope Vue/Vite app", () => {
 
     const found = mock.findings();
     const byType = (t: string) => found.filter((f) => f.types.includes(t)).map((f) => f.value);
-    expect(byType("vue-spa")).toEqual(["Vue single-page app on app.test"]);
+    expect(byType("spa")).toEqual(["Single-page app (Nuxt (Vue.js)) on app.test"]);
     expect(byType("build-manifest")).toEqual(["https://app.test/.vite/manifest.json"]);
     expect(byType("source-map")).toEqual(["https://app.test/assets/index-DPViepmO.js.map"]);
     // Versions came out of the map's dependency paths.
     expect(byType("tech-version").sort()).toEqual(["vue 3.4.21", "vue-router 4.3.0"]);
 
-    const spa = found.find((f) => f.types.includes("vue-spa"))!;
+    const spa = found.find((f) => f.types.includes("spa"))!;
     expect(spa.hidden).toBe(false);
-    expect(Object.fromEntries(spa.fields.map((x) => [x.key, x.value])).framework).toBe("Nuxt (Vue)");
+    expect(Object.fromEntries(spa.fields.map((x) => [x.key, x.value])).framework).toBe("Nuxt (Vue.js)");
 
     const sm = found.find((f) => f.types.includes("source-map"))!;
     expect(sm.notes).toContain("src/views/Login.vue");
@@ -110,7 +110,7 @@ describe("inspectHtml on an in-scope Vue/Vite app", () => {
     await mock.dispatch("traffic.on_response_received", html("https://app.test/", nuxtHtml));
     await idle();
     expect(mock.sent()).toHaveLength(0);
-    expect(mock.findings().map((f) => f.types[0])).toEqual(["vue-spa"]); // still detected, passively
+    expect(mock.findings().map((f) => f.types[0])).toEqual(["spa"]); // still detected, passively
   });
 
   it("records the SPA once when both the HTML and the map confirm it, even on a non-standard port", async () => {
@@ -126,8 +126,8 @@ describe("inspectHtml on an in-scope Vue/Vite app", () => {
     await idle();
     // flow.host is "127.0.0.1:18090"; the map is fetched from the same
     // authority, so it must not be recorded as a second SPA.
-    expect(mock.findings().filter((x) => x.types.includes("vue-spa")).map((x) => x.value)).toEqual([
-      "Vue single-page app on 127.0.0.1:18090",
+    expect(mock.findings().filter((x) => x.types.includes("spa")).map((x) => x.value)).toEqual([
+      "Single-page app (Nuxt (Vue.js)) on 127.0.0.1:18090",
     ]);
   });
 
@@ -160,8 +160,8 @@ describe("inspectScript", () => {
     await mock.dispatch("traffic.on_response_received", js("https://app.test/assets/app-xyz.js", "const x=1;\n//# sourceMappingURL=app-xyz.js.map"));
     await idle();
     expect(mock.sent().map((s) => s.url)).toEqual(["https://app.test/assets/app-xyz.js.map"]);
-    const spa = mock.findings().find((f) => f.types.includes("vue-spa"));
-    expect(spa?.value).toBe("Vue single-page app on app.test");
+    const spa = mock.findings().find((f) => f.types.includes("spa"));
+    expect(spa?.value).toBe("Single-page app (Vue.js) on app.test");
     expect(spa?.notes).toContain("confirmed from the source map");
   });
 
@@ -170,5 +170,47 @@ describe("inspectScript", () => {
     await mock.dispatch("traffic.on_response_received", js("https://app.test/assets/app.js", "console.log(1)"));
     await idle();
     expect(mock.sent()).toHaveLength(0);
+  });
+});
+
+describe("action: recover source from map", () => {
+  it("fetches a bundle's map, reconstructs the sources, and mines their URLs", async () => {
+    mock.target("domain", "app.test");
+    reply("app-xyz\\.js\\.map$", sourceMap);
+    const bundle = js("https://app.test/assets/app-xyz.js", "const x=1;\n//# sourceMappingURL=app-xyz.js.map");
+
+    const r = await mock.action("recover-sources", bundle);
+    expect(r.ran).toBe(true);
+    expect(r.message).toContain("Recovered");
+
+    // The map was fetched from the bundle's sourceMappingURL.
+    expect(mock.sent().map((s) => s.url)).toContain("https://app.test/assets/app-xyz.js.map");
+    // A URL embedded in the recovered source reached the Explorer, and the
+    // exposed-map finding was recorded as it would be on the passive path.
+    const urls = mock.entities().filter((e) => e.type === "url").map((e) => e.key);
+    expect(urls.some((u) => u.includes("api.app.test"))).toBe(true);
+    expect(mock.findings().some((f) => f.types.includes("source-map"))).toBe(true);
+  });
+
+  it("runs on a .map response directly, with no fetch", async () => {
+    mock.target("domain", "app.test");
+    const f = flow({
+      url: "https://app.test/assets/app.js.map",
+      responseHeaders: { "Content-Type": "application/json" },
+      responseBody: sourceMap,
+    });
+    const r = await mock.action("recover-sources", f);
+    expect(r.ran).toBe(true);
+    expect(mock.sent()).toHaveLength(0); // the flow body already is the map
+    const urls = mock.entities().filter((e) => e.type === "url").map((e) => e.key);
+    expect(urls.some((u) => u.includes("api.app.test"))).toBe(true);
+  });
+
+  it("reports when a bundle has no recoverable map", async () => {
+    mock.target("domain", "app.test");
+    // No sourceMappingURL, and app.js.map 404s by default.
+    const r = await mock.action("recover-sources", js("https://app.test/assets/plain.js", "console.log(1)"));
+    expect(r.ran).toBe(true);
+    expect(r.message).toContain("No source map");
   });
 });

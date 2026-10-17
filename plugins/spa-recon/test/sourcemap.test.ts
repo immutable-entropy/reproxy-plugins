@@ -37,6 +37,15 @@ describe("readSourceMap", () => {
     expect(readSourceMap({ name: "My App", icons: [] })).toBeUndefined(); // a web-app manifest
     expect(readSourceMap("<html>")).toBeUndefined();
   });
+
+  it("keeps each path paired with its embedded content, aligned to the map", () => {
+    const m = readSourceMap(map)!;
+    expect(m.files.length).toBe(m.sources.length);
+    expect(m.files[0]).toEqual({ path: "../../src/main.ts", content: "import { createApp } from 'vue'" });
+    // A dependency the build kept the path for but not the content.
+    expect(m.files[4].path).toContain("vue.runtime");
+    expect(m.files[4].content).toBeNull();
+  });
 });
 
 describe("appSources", () => {

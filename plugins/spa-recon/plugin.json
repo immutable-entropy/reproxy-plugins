@@ -1,14 +1,14 @@
 {
-  "name": "vue-spa",
+  "name": "spa-recon",
   "version": "1.0-1",
-  "description": "Recognises Vue.js single-page apps (including Nuxt) and the Vite build behind them, then, on in-scope hosts, fetches any exposed JavaScript source maps and Vite build manifest to recover the app's source-file structure, its framework and build versions, and the URLs it references. Each is recorded as a finding, and discovered hosts and URLs are added to the Entity Explorer. It sends requests to the target to fetch .map and manifest.json files (active), so it is disabled until you enable it.",
+  "description": "Recognises single-page apps — Vue/Nuxt, React/Next.js, Svelte/SvelteKit and Angular — and the bundler build behind them, then, on in-scope hosts, fetches any exposed JavaScript source maps and Vite build manifest to recover the app's source-file structure, its framework and build versions, and the URLs it references. Each is recorded as a finding, and discovered hosts and URLs are added to the Entity Explorer. A right-click action, \"Recover source from map\", reconstructs the original source files a map embeds and mines every one for URLs and API endpoints. It sends requests to the target to fetch .map and manifest.json files (active), so it is disabled until you enable it.",
   "author": {
     "name": "reProxy"
   },
   "status": "disabled",
   "sdk": "1",
   "finding_types": [
-    { "id": "vue-spa", "name": "Vue.js SPA", "color": "#41b883" },
+    { "id": "spa", "name": "Single-Page App", "color": "#41b883" },
     { "id": "source-map", "name": "Exposed Source Map", "color": "#e67e22" },
     { "id": "build-manifest", "name": "Exposed Build Manifest", "color": "#d35400" },
     { "id": "tech-version", "name": "Technology Version", "color": "#34495e" }
@@ -37,6 +37,27 @@
           "text/javascript",
           "text/ecmascript",
           "text/x-javascript"
+        ]
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "recover-sources",
+      "label": "Recover source from map",
+      "description": "Reconstruct the original source files this bundle's source map embeds, and mine every one for URLs and API endpoints into the Entity Explorer. Works on a JavaScript bundle (its .map is fetched) or on a .map response directly.",
+      "function": "recoverSources",
+      "match": {
+        "content_types": [
+          "application/javascript",
+          "application/x-javascript",
+          "application/ecmascript",
+          "text/javascript",
+          "text/ecmascript",
+          "text/x-javascript",
+          "application/json",
+          "application/octet-stream",
+          "text/plain"
         ]
       }
     }

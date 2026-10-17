@@ -1,22 +1,25 @@
-// Recognising a Vue single-page app and its Vite build from what the
-// browser already loaded: the page's HTML, and the module bundles it pulls
-// in. Pure functions over text, so they test with no fixtures and the SDK
-// calls (fetching maps, recording findings) stay in main.ts.
+// Recognising a single-page app and its build from what the browser already
+// loaded: the page's HTML, and the module bundles it pulls in. Pure
+// functions over text, so they test with no fixtures and the SDK calls
+// (fetching maps, recording findings) stay in main.ts.
 //
-// A production Vite SPA's static HTML is almost empty — a mount element and
-// a module script — and looks the same whatever framework built it, so Vue
-// is confirmed from the strongest signal available: a Vue/Nuxt marker in
-// the HTML, or (later, in main.ts) the bundle's own source map naming
-// node_modules/vue. The HTML alone tells Vite from the hashed module
-// bundles it preloads.
+// Which framework built the page comes from the table in frameworks.ts. A
+// production SPA's static HTML is often a near-empty shell — a mount element
+// and a module script — and looks much the same whatever framework built
+// it, so a framework is confirmed from the strongest signal available: an
+// HTML marker, or (later, in main.ts) the bundle's own source map naming the
+// framework in node_modules. The HTML alone still tells a bundler build from
+// the hashed modules it preloads.
+
+import { detectFrameworks, type Detected } from "./frameworks";
 
 /** What a page's HTML gives away about its framework and build. */
 export interface HtmlFacts {
-  /** The HTML names Vue directly (a Vue or Nuxt marker). */
-  vue: boolean;
-  /** Nuxt, Vue's meta-framework, built this page. */
-  nuxt: boolean;
-  /** Vite (module scripts + preloads, or the dev client) built the assets. */
+  /** The frameworks identified from the HTML, primary first. */
+  frameworks: Detected[];
+  /** A bundler build (module scripts + preloads, or a Vite dev client) made the assets. */
+  bundled: boolean;
+  /** Whether that build looks like Vite specifically (for manifest probing). */
   vite: boolean;
   /** The markers that fired, for the finding's notes. */
   signals: string[];
@@ -31,45 +34,39 @@ export interface Asset {
   kind: "module" | "modulepreload" | "style" | "preload";
 }
 
-// Vue- and Nuxt-specific markers. A plain client-rendered Vite+Vue app has
-// none of these in its static HTML (it looks like any Vite app); Nuxt and
-// server-rendered Vue do.
-const VUE_MARKERS: [RegExp, string][] = [
-  [/id=["']__nuxt["']/, "Nuxt mount element (#__nuxt)"],
-  [/window\.__NUXT__/, "Nuxt state (window.__NUXT__)"],
-  [/\/_nuxt\//, "Nuxt asset path (/_nuxt/)"],
-  [/data-v-app\b/, "Vue 3 app root (data-v-app)"],
-  [/\bdata-v-[0-9a-f]{6,10}\b/, "Vue scoped-style attribute (data-v-…)"],
-  [/window\.__VUE__|__VUE_OPTIONS_API__|__VUE_PROD_DEVTOOLS__/, "Vue feature flag"],
-];
-
-const NUXT_MARKERS = /id=["']__nuxt["']|window\.__NUXT__|\/_nuxt\//;
 // A dev server (vite dev) injects its client; a build preloads hashed modules.
 const VITE_DEV = /\/@vite\/client|\/@vue\/|\/@id\/|\/node_modules\/\.vite\//;
 
 /** Read a page's HTML (already decoded). max bounds how much is scanned. */
 export function detectHtml(html: string, max = 2 << 20): HtmlFacts {
   const text = html.length > max ? html.slice(0, max) : html;
-  const facts: HtmlFacts = { vue: false, nuxt: false, vite: false, signals: [], assets: [] };
+  const facts: HtmlFacts = { frameworks: [], bundled: false, vite: false, signals: [], assets: [] };
 
-  for (const [re, name] of VUE_MARKERS) {
-    if (re.test(text)) {
-      facts.vue = true;
-      facts.signals.push(name);
-    }
+  facts.frameworks = detectFrameworks(text);
+  for (const f of facts.frameworks) {
+    for (const s of f.signals) facts.signals.push(`${f.name}: ${s}`);
   }
-  facts.nuxt = NUXT_MARKERS.test(text);
 
   facts.assets = assets(text);
-  const moduleToAssets = facts.assets.some((a) => a.kind === "module" || a.kind === "modulepreload");
+  const moduleAssets = facts.assets.some((a) => a.kind === "module" || a.kind === "modulepreload");
   if (VITE_DEV.test(text)) {
+    facts.bundled = true;
     facts.vite = true;
     facts.signals.push("Vite dev client");
-  } else if (moduleToAssets) {
-    facts.vite = true;
-    facts.signals.push("ES module bundles with preloads (Vite-style build)");
+  } else if (moduleAssets) {
+    facts.bundled = true;
+    // Module bundles with preloads are the Vite/Rollup build shape; a
+    // build-manifest probe is worth a try. Next.js (/_next/) is also a
+    // bundler build but keeps its own manifest, so it is not called Vite.
+    facts.vite = !facts.frameworks.some((f) => f.id === "next");
+    facts.signals.push("ES module bundles with preloads (bundler build)");
   }
   return facts;
+}
+
+/** Whether any framework was identified in the HTML. */
+export function anyFramework(facts: HtmlFacts): boolean {
+  return facts.frameworks.length > 0;
 }
 
 // A bounded scan of <script> and <link> tags. HTML is small for a SPA

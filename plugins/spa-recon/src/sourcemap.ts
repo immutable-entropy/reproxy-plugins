@@ -15,10 +15,22 @@
 // The reply is outside input, so every field is checked before it is used,
 // and nothing is trusted to be the shape it should be.
 
+import { frameworkForDep, frameworkForExt, versioned } from "./frameworks";
+
+/** A source path and the original text the map carries for it, if any. */
+export interface SourceFile {
+  /** The path as written in the map. */
+  path: string;
+  /** The original source text (sourcesContent), or null when the map omits it. */
+  content: string | null;
+}
+
 /** What a map held, once read. */
 export interface SourceMap {
   /** The source paths, as written. */
   sources: string[];
+  /** Each source path paired with its embedded content (null when absent). */
+  files: SourceFile[];
   /** True when the map also carries the original source text. */
   hasContent: boolean;
 }
@@ -30,13 +42,21 @@ export function readSourceMap(json: unknown): SourceMap | undefined {
   // A v3 map has version 3 and a sources array. The mappings string is
   // what makes it a source map rather than, say, a web-app manifest.
   if (o.version !== 3 || !Array.isArray(o.sources) || typeof o.mappings !== "string") return undefined;
+  // sourcesContent is index-aligned to sources, so the two are read together
+  // to keep each path with its own text; a path with no string content
+  // keeps a null, so reconstruction can report it as present but empty.
+  const contents = Array.isArray(o.sourcesContent) ? o.sourcesContent : [];
   const sources: string[] = [];
-  for (const s of o.sources) {
-    if (typeof s === "string" && s) sources.push(s);
+  const files: SourceFile[] = [];
+  for (let i = 0; i < o.sources.length; i++) {
+    const s = o.sources[i];
+    if (typeof s !== "string" || !s) continue;
+    sources.push(s);
+    const c = contents[i];
+    files.push({ path: s, content: typeof c === "string" ? c : null });
   }
   if (sources.length === 0) return undefined;
-  const content = o.sourcesContent;
-  return { sources, hasContent: Array.isArray(content) && content.some((c) => typeof c === "string" && c.length > 0) };
+  return { sources, files, hasContent: files.some((f) => f.content !== null && f.content.length > 0) };
 }
 
 /** An application source file (not a dependency), tidied for reading. */
@@ -50,6 +70,11 @@ export interface AppSource {
 // Paths that are not the application's own code: dependencies, the bundler's
 // virtual modules, and polyfills a build injects.
 const NOT_APP = /(^|\/)node_modules\/|^\x00|^[a-z-]+:|(^|\/)virtual:|\/\.vite\/|(^|\/)vite\/|rollup|commonjsHelpers|modulepreload-polyfill/i;
+
+/** Whether a source path is the application's own code, not a dependency. */
+export function isAppSource(path: string): boolean {
+  return !NOT_APP.test(path);
+}
 
 /**
  * The application's own source files, deduplicated, at most limit. These are
@@ -69,7 +94,8 @@ export function appSources(map: SourceMap, limit = 300): AppSource[] {
   return out;
 }
 
-function tidyPath(p: string): string {
+/** A source path with the build's leading "../", "./" and query stripped. */
+export function tidyPath(p: string): string {
   let s = p.replace(/^(?:\.\.\/)+/, "").replace(/^\.\//, "");
   // Vite writes some entries with a scheme-like prefix or query; keep the path.
   const q = s.indexOf("?");
@@ -88,17 +114,11 @@ export interface Dep {
 // which the version capture deliberately stops before.
 const DEP = /node_modules\/(?:\.pnpm\/)?((?:@[a-z0-9][a-z0-9._-]*[+/])?[a-z0-9][a-z0-9._-]*)@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)/g;
 
-// The frameworks worth reporting a version for: Vue, its router and stores,
-// Nuxt, Vite and the Vue UI kits. Everything else in node_modules is noise.
-const FRAMEWORKS = [
-  "vue", "@vue/", "vue-router", "vue-i18n", "pinia", "vuex",
-  "nuxt", "@nuxt/", "nuxt-",
-  "vite", "@vitejs/", "rollup", "@rollup/",
-  "vuetify", "element-plus", "@element-plus/", "quasar", "naive-ui", "primevue", "ant-design-vue",
-  "@vueuse/", "vue-demi",
-];
-
-/** The framework and build-tool versions a map's dependency paths reveal. */
+/**
+ * The framework, build-tool and UI-kit versions a map's dependency paths
+ * reveal. Which packages are worth reporting is frameworks.ts's `versioned`;
+ * everything else in node_modules is noise.
+ */
 export function frameworkVersions(map: SourceMap): Dep[] {
   const found = new Map<string, string>();
   for (const raw of map.sources) {
@@ -106,7 +126,7 @@ export function frameworkVersions(map: SourceMap): Dep[] {
     let m: RegExpExecArray | null;
     while ((m = DEP.exec(raw))) {
       const name = normalizeName(m[1]);
-      if (!isFramework(name)) continue;
+      if (!versioned(name)) continue;
       if (!found.has(name)) found.set(name, m[2]);
     }
   }
@@ -118,18 +138,26 @@ function normalizeName(n: string): string {
   return n.startsWith("@") ? "@" + n.slice(1).replace("+", "/") : n;
 }
 
-function isFramework(name: string): boolean {
-  return FRAMEWORKS.some((f) => (f.endsWith("/") ? name.startsWith(f) : name === f || name.startsWith(f + "-")));
-}
-
 /**
- * Whether a map shows the app is built with Vue: a Vue-ecosystem dependency,
- * or a single-file component (.vue) among its own sources. This is how a
- * client-rendered Vue SPA — whose static HTML names nothing — is confirmed.
+ * The front-end framework a map reveals, as a framework id ("vue", "react",
+ * "svelte", "angular"), or undefined. It is read from a framework dependency
+ * in node_modules or an application source-file extension (.vue, .svelte).
+ * This is how a client-rendered SPA — whose static HTML names nothing — is
+ * confirmed and labelled.
  */
-export function mapNamesVue(map: SourceMap): boolean {
-  if (frameworkVersions(map).some((d) => d.name === "vue" || d.name.startsWith("@vue/") || d.name === "nuxt" || d.name === "vue-router")) {
-    return true;
+export function mapFramework(map: SourceMap): string | undefined {
+  for (const raw of map.sources) {
+    DEP.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = DEP.exec(raw))) {
+      const id = frameworkForDep(normalizeName(m[1]));
+      if (id) return id;
+    }
   }
-  return map.sources.some((s) => /\.vue(\?|$)/.test(s) && !/node_modules/.test(s));
+  for (const s of map.sources) {
+    if (/node_modules/.test(s)) continue;
+    const id = frameworkForExt(s);
+    if (id) return id;
+  }
+  return undefined;
 }
