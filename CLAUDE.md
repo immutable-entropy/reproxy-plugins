@@ -45,7 +45,7 @@ plugins/
     plugin.json            the manifest
     main.ts                the entry point; exports every function plugin.json names
     src/*.ts               the logic, as plain functions that can be unit-tested
-    test/*.test.ts         tests, run by `reproxy plugin test`; never installed
+    test/*.test.ts         tests, run by `reproxy plugins test`; never installed
 ```
 
 The current plugins are good models. Read the closest one before writing a
@@ -55,9 +55,10 @@ new one:
 |---|---|
 | `wordpress` | watch the **Entity Explorer** (`url.*` hooks) instead of traffic, read the flows behind a URL, keep per-run state that `plugin.on_load` resets, and record findings that merge |
 | `sensitive-info` | scan a message's headers, query string and body (and WebSocket messages) with `text.scan` (RE2 in Go), keep a big body affordable by gating patterns behind a plain text search, record a secret `hidden`, use tight `content_types` filters, use list, number and boolean settings, and redact values |
+| `footprint` | pull the links out of a response in Go (`text.urls`) and classify each in TypeScript, read HTML structure by hand (is a link in the `<header>`/`<footer>`/`<nav>`, or `rel="me"`?) without a DOM, gate literal-anchored patterns behind `indexOf` to stay cheap, and record findings that identify rather than authenticate (never `hidden`); keep `test/cost.test.ts` to prove the cost holds |
+| `stack-disclosure` | act on response headers alone with plain string work (no `text.scan`, no body read), record a finding once per host (dedupe on value+host) so it gains one sighting per host rather than per response, and keep `plugin.on_load` to reset that per-run set |
 | `saml-inspector` | decode a protocol (base64 + DEFLATE + XML) in pure TypeScript and grade what it finds |
-| `dnsdumpster` | call a third-party API with a `secret` setting, react to `target.on_changed`, pace requests to a rate limit, remember work per engagement (`storage.engagement`), and add hosts and addresses to the Explorer and Targets → Related (`entities.addHost` with `from`) |
-| `certificate-transparency` | ask two services for the same data and merge their answers into one record (failing over when one is down, and merging a half-answered lookup into what an earlier one left), retry and back off on 429/5xx, read a big reply a slice per turn, and parse a binary format (a certificate's SANs) in TypeScript |
+| `precon` | be driven from the command line rather than by traffic (`commands`, `reproxy precon <action>`, no traffic or entity hooks), with the lookup logic kept as plain functions under `src/` that the command handlers in `main.ts` call; merge two services' answers into one record and parse a binary format (a certificate's SANs) in TypeScript (`src/ssl`), and read a third-party API's reply defensively (`src/dns`) |
 | `js-libraries` | watch responses of one kind (`content_types`) on the targets and, with a `hosts` list and the Referer, the third-party hosts a target's pages load from; gate `text.scan` patterns behind `indexOf` needles; write notes that stay the same on every sighting so findings merge cleanly; look results up in an outside API once and keep the answers in `storage` with an expiry |
 | `spa-recon` | detect a framework (Vue/Nuxt, React/Next, Svelte/SvelteKit, Angular) and build from the HTML and the bundles it loads; send requests of the plugin's own (`http.send`, through the upstream chain, `record: true`) to fetch build artefacts only on in-scope hosts; parse a large JSON source map and a build manifest defensively; confirm a fact from a second source (the map) when the first (the HTML) is inconclusive; remember probed origins and fetched files in `storage.engagement` so active work is done once |
 
@@ -91,6 +92,20 @@ and `entity.*` fires for all three (narrow it with `match.types`).
 `on_created`/`_updated` only run for entities in a target unless the user
 opts in to all of them (Settings → Targets); don't rely on hearing about
 related hosts.
+
+Files the work **recovers** are core too (`internal/files`), for the same
+reason: a plugin produces the bytes — core writes them, since a plugin has no
+filesystem — but a recovered file is something *other* plugins act on. Hand a
+recovery to `files.addAll` (or one file to `files.add`) and core records it,
+puts it under `<engagement>/recovered/`, and calls `file.on_created` on
+whoever targets it; a scanner then reads it with `files.read` using the code
+it already has for response bodies. Don't keep recovered text in a variable
+or in `storage` and scan it yourself: that hides it from the other plugins,
+from the user's Files section, from `reproxy files …` and from their agents.
+Recovering a path with bytes it already holds changes nothing and raises no
+event, so a recovery is safe to run twice. A recovery of thousands of files
+will overrun a plugin's queue; that is what `file.on_batch_complete` and
+`files.list({ batch })` are for.
 
 ## The rules a plugin must keep
 
@@ -233,24 +248,24 @@ avoid it.
 
 The `reproxy` binary carries the plugin tools. None of them start the app or
 need a display. From `/workspaces/reproxy`, `make build` writes
-`bin/reproxy`; `go run ./cmd/reproxy plugin ...` works too.
+`bin/reproxy`; `go run ./cmd/reproxy plugins ...` works too.
 
 ```sh
 R=/workspaces/reproxy/bin/reproxy
-$R plugin validate plugins/<name>          # manifest + exported functions
-$R plugin test plugins/<name>              # every *.test.ts
-$R plugin test -v -run 'JWT' plugins/<name>  # one test, with the plugin's log
-$R plugin types plugins/<name>             # SDK types + tsconfig.json for an editor
+$R plugins validate plugins/<name>          # manifest + exported functions
+$R plugins test plugins/<name>              # every *.test.ts
+$R plugins test -v -run 'JWT' plugins/<name>  # one test, with the plugin's log
+$R plugins types plugins/<name>             # SDK types + tsconfig.json for an editor
 
 # everything, before committing:
-for d in plugins/*/; do $R plugin validate "$d" && $R plugin test "$d" || break; done
+for d in plugins/*/; do $R plugins validate "$d" && $R plugins test "$d" || break; done
 ```
 
 Tests run in the same goja runtime as the app, against a throwaway
 engagement with real stores: findings really merge, URLs really
 template. Each test has 5 s, and everything is reset before each one.
 
-`plugin types` writes `.reproxy/` and `tsconfig.json` into the plugin's
+`plugins types` writes `.reproxy/` and `tsconfig.json` into the plugin's
 directory. TypeScript types are only stripped when a plugin loads, never
 checked, so this is how you get type errors in an editor. Don't commit
 those files (`.gitignore` covers them).
@@ -294,6 +309,14 @@ A quick reminder of what's there (the README has the details):
   `{ action, flow }` (`ActionHandler`), may answer a message for the status
   line, and may run up to five minutes; what it sends goes through
   `http.send`, so through the upstream chain. Test with `mock.action`.
+- **Commands** (`commands` in plugin.json): what the plugin adds to
+  reProxy's command line, under the plugin's own name — `reproxy
+  <plugin> <action> --flags` — so you declare actions, not namespaces.
+  Core parses the flags the command declared and writes its help, so the
+  function gets `{ namespace, action, flags, args, json }`
+  (`CommandHandler`) and answers with text, or `{ output, json, code }`.
+  A plugin named for a core namespace (`findings`, `targets`, `flows` …)
+  may not declare commands at all.
 - **Decisions** (decide hooks): `decision.pass()` (or return nothing),
   `decision.edit(text)`, `decision.forward(text?)`, `decision.drop()`.
   Change messages with `edit.setHeader`, `edit.removeHeader` and

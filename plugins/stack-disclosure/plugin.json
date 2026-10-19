@@ -1,0 +1,45 @@
+{
+  "name": "stack-disclosure",
+  "version": "1.0-1",
+  "description": "Reads response headers for what they give away about the stack: the web server and its version, the language, framework or CMS, the build that is deployed, internal host names and private addresses, framework session cookies, and debugging aids left switched on. Each is recorded as a finding, once per host, with the setting that turns it off. It only reads traffic: nothing is held, changed or sent.",
+  "author": {
+    "name": "Kayleigh",
+    "email": null
+  },
+  "status": "disabled",
+  "sdk": "1",
+  "finding_types": [
+    { "id": "disclosure", "name": "Stack Disclosure", "color": "#546e7a" }
+  ],
+  "targets": [
+    { "hook": "plugin.on_load", "function": "load" },
+    {
+      "hook": "traffic.on_response_received",
+      "function": "scanResponse",
+      "match": { "scope": "in_scope" }
+    }
+  ],
+  "settings": [
+    {
+      "key": "versions_only",
+      "type": "boolean",
+      "label": "Only report banners that name a version",
+      "description": "Off: \"Server: nginx\" is a finding as well as \"Server: nginx/1.18.0\". On: only a banner with a version is. Internal hosts and addresses, build numbers, debugging headers and framework cookies are reported either way.",
+      "default": false
+    },
+    {
+      "key": "skip_detectors",
+      "type": "list",
+      "label": "Detectors to skip",
+      "description": "Detector ids never to report: server_banner, tech_header, app_version, proxy_banner, internal_host, internal_address, bigip_cookie, stack_cookie, debug_header. The README lists what each one finds.",
+      "default": []
+    },
+    {
+      "key": "max_findings",
+      "type": "number",
+      "label": "Most findings from one response",
+      "description": "A response whose headers trip more detectors than this is stopped at the cap.",
+      "default": 25
+    }
+  ]
+}

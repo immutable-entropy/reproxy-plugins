@@ -12,17 +12,7 @@
 import { entropy } from "./entropy";
 import type { FindingType } from "./formats";
 import type { Branch } from "./pattern";
-import {
-  decodeForm,
-  digits,
-  isPlaceholder,
-  looksLikeHash,
-  luhn,
-  plausibleDate,
-  plausiblePhone,
-  plausibleSsn,
-  validIban,
-} from "./validate";
+import { decodeForm, digits, isPlaceholder, looksLikeHash, luhn, plausibleDate, plausibleSsn, validIban } from "./validate";
 
 // Words that may appear anywhere in a field's name: long enough that a
 // chance substring is unlikely.
@@ -56,10 +46,6 @@ const LOOSE = [
   "user[_.-]?name",
   "login",
   "screen[_.-]?name",
-  "e[_.-]?mail",
-  "msisdn",
-  "telephone",
-  "cellphone",
   "passport",
   "licen[cs]e",
   "social[_.-]?security",
@@ -90,7 +76,7 @@ const LOOSE = [
 
 // Words that count only as a whole part of a name, so "sid" matches
 // "sid" and "x_sid" but not "inside", and "key" doesn't match "monkey".
-const STRICT = ["pass", "key", "token", "auth", "user", "uid", "mail", "phone", "mobile", "tel", "cell", "dob", "card", "pan", "pin", "otp", "totp", "mfa", "sid", "ssn", "nino", "sin", "iban", "cvv", "cvc", "csc", "hash", "salt"];
+const STRICT = ["pass", "key", "token", "auth", "user", "uid", "dob", "card", "pan", "pin", "otp", "totp", "mfa", "sid", "ssn", "nino", "sin", "iban", "cvv", "cvc", "csc", "hash", "salt"];
 
 /**
  * FIELD_ANCHORS are the literals a body must hold for any of these names to
@@ -292,20 +278,6 @@ const RULES: Rule[] = [
     type: "personal-data",
     names: /(?:^|_)(?:dob|birth_date|birthdate|date_of_birth|birthday|birth)(?:_|$)/,
     check: (v) => (plausibleDate(v) ? v : null),
-  },
-  {
-    id: "field_phone",
-    label: "Telephone number",
-    type: "personal-data",
-    names: /(?:^|_)(?:phone|phone_number|mobile|mobile_number|msisdn|tel|telephone|cell|cellphone)(?:_|$)/,
-    check: (v) => (plausiblePhone(v) ? v : null),
-  },
-  {
-    id: "field_email",
-    label: "Email address",
-    type: "personal-data",
-    names: /(?:^|_)(?:email|e_mail|mail|email_address|user_email|contact_email)(?:_|$)/,
-    check: (v) => (/^[^@\s]{1,64}@[^@\s]{1,253}\.[A-Za-z]{2,24}$/.test(v) ? v : null),
   },
   {
     id: "field_username",

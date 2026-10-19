@@ -2,18 +2,24 @@
 
 Reads every targeted request, response and WebSocket message and records
 what shouldn't be travelling in the clear: credentials, keys and tokens,
-password hashes, and personal data. Each hit becomes a finding whose value
-is the thing itself, linked to the request it was seen in; the same value
-found again adds a sighting rather than a second finding.
+password hashes, and highly sensitive personal data — payment cards, bank
+and government identifiers, dates of birth. Each hit becomes a finding whose
+value is the thing itself, linked to the request it was seen in; the same
+value found again adds a sighting rather than a second finding.
 
 It only reads traffic. Nothing is held, changed or sent, and the scanning
 happens after the message has been forwarded.
 
 Values that are secrets in themselves are recorded **hidden**, so reProxy
-keeps them masked until you click the eye beside the value. Personal data
-that identifies rather than authenticates — an email address, a telephone
-number, a date of birth — is left readable, because masking what you are
-looking at helps nobody. Turn it off with **Hide secret values**.
+keeps them masked until you click the eye beside the value. A date of birth,
+which identifies but doesn't authenticate, is left readable, because masking
+what you are looking at helps nobody. Turn it off with **Hide secret values**.
+
+> This is the highly sensitive half of what was once a single plugin.
+> Contact details and the external footprint — emails, telephone numbers,
+> postal addresses, social-media accounts, source-code repositories — are now
+> the **footprint** plugin's; what a response's headers give away about the
+> stack is the **stack-disclosure** plugin's.
 
 ## Where it looks
 
@@ -23,7 +29,6 @@ looking at helps nobody. Turn it off with **Hide secret values**.
 | Headers | `Authorization` and `Proxy-Authorization` of any scheme (Basic is decoded to the user name and password it hides), cookies, `X-Api-Key` and anything else named like a credential. |
 | Bodies | Form, JSON, XML and multipart bodies, up to **Largest body scanned**. |
 | WebSocket messages | Both directions, text messages only. |
-| Response headers, for the stack | What the site runs on: see [fingerprint](#fingerprint). Request headers are the browser's, so they aren't read for this. |
 
 Replayed traffic and an agent's sends come through the same hooks, so they
 are scanned too. Requests can be turned off with **Scan requests**.
@@ -32,7 +37,7 @@ are scanned too. Requests can be turned off with **Scan requests**.
 
 Every detector has an id, and every id belongs to a category — the finding
 type it records. Both work in the **Detectors to run** and **Detectors to
-skip** settings: `email` is one detector, `personal-data` is all of them in
+skip** settings: `ssn` is one detector, `personal-data` is all of them in
 that category.
 
 ### credential
@@ -72,46 +77,15 @@ of the web is 32 hex characters.
 
 ### personal-data
 
-`email`, `phone`, `ssn` (checked against the numbers that can be issued),
-`uk_nino`, `field_email`, `field_phone`, `field_dob`, `field_gov_id`
-(passport, driving licence, tax and national identifiers).
+`ssn` (checked against the numbers that can be issued), `uk_nino`,
+`field_dob`, `field_gov_id` (passport, driving licence, tax and national
+identifiers). Email addresses and telephone numbers are the **footprint**
+plugin's, not this one's.
 
 ### payment-data
 
 `credit_card` and `field_card` (both checked with Luhn), `field_cvv`,
 `iban` and `field_bank` (IBANs are checked with their mod-97 checksum).
-
-### fingerprint
-
-Response headers that tell an attacker what the site runs on. None is a
-secret, so these findings are never hidden, and none is a vulnerability by
-itself, but each saves an attacker work (a version to look up CVEs for, an
-internal host to aim a server-side request forgery at), and the notes say
-how to switch it off.
-
-| Detector | What it reports |
-|---|---|
-| `server_banner` | `Server`, with or without a version. |
-| `tech_header` | `X-Powered-By`, `X-AspNet-Version`, `X-Generator`, `X-Jenkins`, `X-OWA-Version`, `Liferay-Portal`, `MicrosoftSharePointTeamServices` and the like; and headers whose presence names the product (`X-Drupal-Cache` → Drupal, `X-Runtime` → probably Rails, `X-Nextjs-Cache` → Next.js). |
-| `app_version` | The deployed build: `X-Version`, `X-Build`, `X-Revision`, `X-Git-Commit` and friends, and Spring Boot's `X-Application-Context`. |
-| `proxy_banner` | A `Via` that names its software, and gateways that show by a header of their own (Varnish, Kong, Envoy, Squid, Fastly). |
-| `internal_host` | Headers naming the back-end node that answered: `X-Backend-Server`, `X-Served-By`, `X-Upstream`, Exchange's `X-FEServer`/`X-BEServer`/`X-CalculatedBETarget`, and others. |
-| `internal_address` | A private, loopback, link-local or carrier-grade NAT IPv4 address in any response header (a `Location` pointing inside, an echoed `X-Forwarded-For`). |
-| `bigip_cookie` | F5 BIG-IP's `BIGipServer<pool>` cookie, decoded to the internal address and port of the pool member when it isn't encrypted. |
-| `stack_cookie` | Session cookies whose default names give the framework away: `PHPSESSID`, `JSESSIONID`, `ASP.NET_SessionId`, `laravel_session`, `connect.sid`, Drupal's `SESS…` and others. The cookie's value is never recorded here. |
-| `debug_header` | Debugging aids left on: Symfony's profiler (`X-Debug-Token`), Laravel Debugbar and Clockwork, ChromeLogger, Xdebug. |
-
-A finding's value is the header as sent (`Server: Apache/2.4.41 (Ubuntu)`),
-or the product when the header's value changes from response to response
-(`Drupal (X-Drupal-Cache header)`, `Symfony profiler (X-Debug-Token header)`).
-Header names are written the usual way whatever the protocol, so HTTP/2's
-`server` and HTTP/1.1's `Server` make one finding. These headers are on every
-response, so each disclosure is recorded once per host: one finding, with a
-sighting for every host that sends it.
-
-**Only report server and framework banners that name a version** drops
-`Server: nginx` but keeps `Server: nginx/1.18.0`; the other detectors are
-unaffected. Skip `fingerprint` to turn the lot off.
 
 ## What it won't say
 
@@ -126,8 +100,7 @@ Weak real passwords are *not* ignored: `password=test` in a test
 environment is a credential on the wire, and the point of the plugin.
 
 Use **Values to ignore** for the ones you know about — a sample key an API's
-documentation returns, the test account's password — and **Email domains to
-ignore** for the addresses that aren't a person's.
+documentation returns, the test account's password.
 
 ## What it costs
 
@@ -141,9 +114,9 @@ format with a literal in it (`AKIA`, `-----BEGIN`, `$2y$`, `password`) is
 **anchored**: one `indexOf` over a lower-cased copy says whether the literal
 is there at all — fifty of those cost about 7 ms over that same body — and
 the patterns are run only on the windows of text around what they found. A
-format with nothing to anchor on (an email address, a card number) has to be
-looked for everywhere, so those patterns are small ones and are run over the
-body up to **Largest body scanned for personal data**, which is lower.
+format with nothing to anchor on (a card number, an SSN) has to be looked
+for everywhere, so those patterns are small ones and are run over the body
+up to **Largest body scanned for personal data**, which is lower.
 
 A 512 KiB body with nothing in it takes about 80 ms; a login takes about 3.
 `test/cost.test.ts` measures it, and is the thing to run after touching a

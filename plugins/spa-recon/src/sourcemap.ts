@@ -139,6 +139,26 @@ function normalizeName(n: string): string {
 }
 
 /**
+ * Every dependency a map's node_modules paths name, with its version,
+ * deduplicated and sorted. frameworkVersions keeps only the frameworks worth
+ * a rich note; this is the whole bill of materials, for recording each
+ * dependency and its version as a finding (its source is not recovered, so
+ * the finding is where that fact is kept).
+ */
+export function allDeps(map: SourceMap): Dep[] {
+  const found = new Map<string, string>();
+  for (const raw of map.sources) {
+    DEP.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = DEP.exec(raw))) {
+      const name = normalizeName(m[1]);
+      if (!found.has(name)) found.set(name, m[2]);
+    }
+  }
+  return [...found.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([name, version]) => ({ name, version }));
+}
+
+/**
  * The front-end framework a map reveals, as a framework id ("vue", "react",
  * "svelte", "angular"), or undefined. It is read from a framework dependency
  * in node_modules or an application source-file extension (.vue, .svelte).

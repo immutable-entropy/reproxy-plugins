@@ -1,0 +1,83 @@
+{
+  "name": "footprint",
+  "version": "1.0-1",
+  "description": "Maps an organisation's external footprint from its own traffic: the contact details it publishes (emails, telephone numbers, postal addresses), the social-media accounts and source-code repositories it links to, the cloud storage buckets, package-registry entries and third-party services it uses, and the API and documentation endpoints it exposes. Each is recorded as a finding. Social and source links are judged by where they sit — an account in the header or footer (or carrying rel=\"me\") is the organisation's own; one in the page content may be a third party's. It only reads responses: nothing is held, changed or sent.",
+  "author": {
+    "name": "Kayleigh",
+    "email": null
+  },
+  "status": "disabled",
+  "sdk": "1",
+  "finding_types": [
+    { "id": "contact", "name": "Contact Detail", "color": "#00897b" },
+    { "id": "social-account", "name": "Social Media Account", "color": "#3949ab" },
+    { "id": "source-repo", "name": "Source Code Platform", "color": "#6d4c41" },
+    { "id": "cloud-storage", "name": "Cloud Storage", "color": "#0277bd" },
+    { "id": "package", "name": "Package Reference", "color": "#827717" },
+    { "id": "service-id", "name": "Third-party Service", "color": "#8e24aa" },
+    { "id": "api-endpoint", "name": "API Endpoint", "color": "#ad1457" }
+  ],
+  "targets": [
+    {
+      "hook": "traffic.on_response_received",
+      "function": "scanResponse",
+      "match": {
+        "scope": "in_scope",
+        "content_types": [
+          "text/*",
+          "application/xhtml+xml",
+          "application/json",
+          "application/*+json",
+          "application/javascript",
+          "application/x-javascript",
+          "application/ecmascript",
+          "application/xml",
+          "application/*+xml"
+        ]
+      }
+    }
+  ],
+  "settings": [
+    {
+      "key": "skip_detectors",
+      "type": "list",
+      "label": "Detectors to skip",
+      "description": "Detector ids (email, phone, github, bucket, ga4, …) or whole categories (contact, social-account, source-repo, cloud-storage, package, service-id, api-endpoint) never to report. The README lists every id.",
+      "default": []
+    },
+    {
+      "key": "include_content_links",
+      "type": "boolean",
+      "label": "Include links to individual posts and files",
+      "description": "Off: only accounts and repositories (a social profile, an org or repo page) are recorded. On: links to individual posts, videos and repository files are recorded too, which is far noisier.",
+      "default": false
+    },
+    {
+      "key": "max_findings",
+      "type": "number",
+      "label": "Most findings from one response",
+      "description": "A page that links out dozens of times is stopped at the cap.",
+      "default": 50
+    },
+    {
+      "key": "max_body_kb",
+      "type": "number",
+      "label": "Largest body scanned (KiB)",
+      "description": "Bodies bigger than this are left alone. Links are extracted in Go and the service-identifier patterns are anchored on a literal, so most of the scan is cheap at any size.",
+      "default": 512
+    },
+    {
+      "key": "max_pii_kb",
+      "type": "number",
+      "label": "Largest body scanned for emails and phone numbers (KiB)",
+      "description": "An email address or a telephone number has no fixed text to search for first, so those patterns read the body itself. This keeps that bounded; every other detector still covers the whole body.",
+      "default": 128
+    },
+    {
+      "key": "ignore_emails",
+      "type": "list",
+      "label": "Email domains to ignore",
+      "default": ["example.com", "example.org", "example.net", "sentry.io", "w3.org", "schema.org", "googleapis.com", "sentry-next.wixpress.com"]
+    }
+  ]
+}

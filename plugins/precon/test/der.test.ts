@@ -1,5 +1,5 @@
 import { describe, expect, it } from "reproxy/testing";
-import { pemBody, sanDNSNames } from "../src/der";
+import { pemBody, sanDNSNames } from "../src/ssl/der";
 import { testPEM } from "./fixture";
 
 describe("sanDNSNames", () => {

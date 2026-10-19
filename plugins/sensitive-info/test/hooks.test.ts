@@ -40,11 +40,11 @@ describe("scanResponse", () => {
     expect(found[0].links).toHaveLength(2);
   });
 
-  it("records a leaked password hash from a JSON API", async () => {
+  it("records a leaked password hash and SSN from a JSON API", async () => {
     await mock.dispatch("traffic.on_response_received", {
       url: "https://app.test/api/users/1",
       responseHeaders: { "Content-Type": "application/json" },
-      responseBody: `{"id":1,"email":"ann@corp.test","password_hash":"$2y$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"}`,
+      responseBody: `{"id":1,"ssn":"234-56-7890","password_hash":"$2y$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"}`,
     });
     const types = mock.findings().map((f) => f.types[0]).sort();
     expect(types).toEqual(["hash", "personal-data"]);
@@ -101,24 +101,24 @@ describe("scanRequest", () => {
       url: "https://app.test/import",
       method: "POST",
       requestHeaders: { "Content-Type": "text/plain" },
-      requestBody: "a@corp.test b@corp.test c@corp.test d@corp.test e@corp.test",
+      requestBody: "AKIAIOSFODNN7EXAMPL1 AKIAIOSFODNN7EXAMPL2 AKIAIOSFODNN7EXAMPL3 AKIAIOSFODNN7EXAMPL4 AKIAIOSFODNN7EXAMPL5",
     });
     expect(mock.findings()).toHaveLength(2);
   });
 });
 
 describe("hiding secret values", () => {
-  it("records a secret hidden and personal data in the clear", async () => {
+  it("records a secret and an SSN hidden, a date of birth in the clear", async () => {
     await mock.dispatch("traffic.on_response_received", {
       url: "https://app.test/api/me",
       responseHeaders: { "Content-Type": "application/json" },
-      responseBody: `{"email":"ann@corp.test","api_key":"Zx9Qm2Lw7Vb4Np8Kr3Ty","ssn":"234-56-7890"}`,
+      responseBody: `{"dob":"1981-04-02","api_key":"Zx9Qm2Lw7Vb4Np8Kr3Ty","ssn":"234-56-7890"}`,
     });
     const hidden: Record<string, boolean> = {};
     for (const f of mock.findings()) hidden[f.value] = f.hidden;
     expect(hidden["Zx9Qm2Lw7Vb4Np8Kr3Ty"]).toBe(true);
     expect(hidden["234-56-7890"]).toBe(true);
-    expect(hidden["ann@corp.test"]).toBe(false);
+    expect(hidden["1981-04-02"]).toBe(false);
   });
 
   it("can be switched off", async () => {

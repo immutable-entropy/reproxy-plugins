@@ -17,12 +17,13 @@ button that opens it. The plugins here:
 | Plugin | What it does |
 |---|---|
 | [`wordpress`](plugins/wordpress) | Recognises WordPress sites from the Entity Explorer and records the core version, plugins, themes, REST namespaces and exposed accounts as findings. Passive by default; an opt-in active scan requests a part's readme.txt/style.css to pin a version the traffic didn't state |
-| [`sensitive-info`](plugins/sensitive-info) | Flags credentials, keys, tokens, password hashes and personal data in requests, responses and WebSocket messages — headers, query strings and bodies — as findings, recording the ones that are secrets in themselves hidden; and response headers that give the stack away (server and framework versions, builds, internal hosts and addresses, BIG-IP cookies, debugging left on) |
+| [`sensitive-info`](plugins/sensitive-info) | Flags credentials, keys, tokens, password hashes and highly sensitive personal data (payment cards, bank and government identifiers, dates of birth) in requests, responses and WebSocket messages — headers, query strings and bodies — as findings, recording the ones that are secrets in themselves hidden |
+| [`footprint`](plugins/footprint) | Maps an organisation's external footprint from its responses: the contact details it publishes (emails, telephone numbers, postal addresses), the social-media accounts and source-code repositories it links to (judged by whether they sit in the header/footer or carry rel="me", so the org's own accounts are told from third parties' links in the page content), and the cloud buckets, package-registry entries, third-party services and API/documentation endpoints it exposes |
+| [`stack-disclosure`](plugins/stack-disclosure) | Flags what a response's headers give away about the stack — the web server and its version, the language/framework/CMS, the deployed build, internal host names and private addresses, framework session cookies, and debugging aids left on — as findings, once per host, with the setting that turns each off |
 | [`saml-inspector`](plugins/saml-inspector) | Decodes SAML exchanges (including DEFLATE redirect binding) and flags subjects, attributes and assertion weaknesses as findings |
-| [`certificate-transparency`](plugins/certificate-transparency) | Looks each domain target up in the Certificate Transparency logs through both crt.sh and ctlogs.dev, merges the two answers certificate by certificate, and puts every host name the certificates cover in the Entity Explorer (issuers, validity, which service saw it), with names on the same certificates outside the domain (related domains) under Targets → Related. Sends the domain name to two third parties; no key needed |
-| [`dnsdumpster`](plugins/dnsdumpster) | Looks each domain target up with DNSDumpster's API (your API key, kept as a secret setting) and lists the host names and addresses it knows of under Targets → Related. Sends the domain name to a third party |
+| [`precon`](plugins/precon) | Pre-engagement reconnaissance from the command line. `reproxy precon dns <domain>` looks a domain up in DNS reconnaissance sources (DNSDumpster); `reproxy precon ssl <domain>` looks it up in the Certificate Transparency logs through both crt.sh and ctlogs.dev, merging the two answers certificate by certificate. What the lookups find — host names, addresses, certificate issuers and validity — goes in the Entity Explorer, with names outside the domain under Targets → Related. Driven by the user, not by traffic; each command sends the domain name to third-party services |
 | [`js-libraries`](plugins/js-libraries) | Recognises the JavaScript libraries the targets serve (from a script's URL or its banner, including scripts a target's page loads from a public CDN) and records each version as a finding; looks each exact version up on osv.dev and raises every known vulnerability as a finding with its osv.dev link, severity and fixed release. Sends package names and versions to osv.dev |
-| [`spa-recon`](plugins/spa-recon) | Recognises single-page apps — Vue/Nuxt, React/Next.js, Svelte/SvelteKit and Angular — and the bundler build behind them; on in-scope hosts it fetches exposed JavaScript source maps and the Vite build manifest to recover the app's source-file structure, its framework and build versions, and the URLs it references. Records a finding per SPA, exposed source map, exposed build manifest and framework version, and fills the Entity Explorer from the hosts and URLs it finds. A right-click action, "Recover source from map", reconstructs the original source files a map embeds and mines each for URLs and API endpoints. Sends requests to the target (active) to fetch .map and manifest.json files |
+| [`spa-recon`](plugins/spa-recon) | Recognises single-page apps — Vue/Nuxt, React/Next.js, Svelte/SvelteKit and Angular — and the bundler build behind them; on in-scope hosts it fetches exposed JavaScript source maps and the Vite build manifest to recover the app's source-file structure, its framework and build versions, and the URLs it references. When a map carries the source it un-webpacks it automatically (on by default): the application's source files are written to the engagement's recovered files, the exposed-map finding links to them, and each recovered file is mined for the URLs it calls. Records a finding per SPA, exposed source map, exposed build manifest, framework and bundled-dependency version, and fills the Entity Explorer from the hosts and URLs it finds. The right-click action "Recover source from map" does the same on demand. Sends requests to the target (active) to fetch .map and manifest.json files |
 
 ## Layout
 
@@ -31,7 +32,7 @@ my-plugin/
   plugin.json      what the plugin is, and which functions run on which hooks
   main.ts          the entry point: every function plugin.json names is exported here
   src/             anything else, imported from main.ts
-  test/*.test.ts   unit tests (reproxy plugin test)
+  test/*.test.ts   unit tests (reproxy plugins test)
 ```
 
 The directory name must equal the plugin's `name`. `main.ts` can import:
@@ -82,13 +83,14 @@ downloads its `.ts`, `.js`, `.json`, `.md` and `.txt` files, but not its tests
 | `status` | `enabled` or `disabled`: the default for a plugin put in the plugins folder by hand. One installed from a repository always starts disabled. |
 | `sdk` | The SDK major version the plugin was written for (`"1"`). A mismatch is refused rather than half-working. |
 | `finding_types` | Optional. Types the plugin's findings use. They are added to the catalog while the plugin is enabled, and never saved to the user's settings. |
-| `targets` | Maps hooks to exported functions (see below). Each `function` must be exported by `main.ts`; this is checked when the plugin is found, without running it. A plugin needs at least one target or one action. |
+| `targets` | Maps hooks to exported functions (see below). Each `function` must be exported by `main.ts`; this is checked when the plugin is found, without running it. A plugin needs at least one target, action or command. |
 | `actions` | Optional. What the plugin offers to run on a request the user right-clicks in the traffic list (see [Actions](#actions)). |
+| `commands` | Optional. What the plugin adds to reProxy's command line, under the plugin's own name: `reproxy <plugin> <action> --flags` (see [Commands](#commands)). |
 | `settings` | Optional. What the user can set in the Plugins window (see below). |
 
 Unknown fields are refused, so a typo is reported instead of ignored. Every
 problem with a manifest is listed in the Plugins window and by
-`reproxy plugin validate`.
+`reproxy plugins validate`.
 
 ### Targets
 
@@ -136,6 +138,8 @@ and asynchronous, so they never slow the traffic down.
 | `url.on_created` / `_updated` / `_deleted` | `{ entity }` (a `Url`): a URL was put in the Entity Explorer (requested, or discovered in a response), gained a request or a link, or had its key/value store edited; or was removed. |
 | `host.on_created` / `_updated` / `_deleted` | `{ entity }` (a `Host`): the same for a host. It is updated when a request reaches one of its URLs. |
 | `domain.on_created` / `_updated` / `_deleted` | `{ entity }` (a `Domain`): the same for a domain. It is updated when a request reaches one of its hosts. |
+| `file.on_created` / `_updated` / `_deleted` | `{ file }` (a `RecoveredFile`): a file the work recovered was written under the engagement for the first time, recovered again with different bytes, or deleted. Recovering the same bytes again raises nothing, so a repeated recovery doesn't set your scanner off twice. |
+| `file.on_batch_complete` | `{ batch }` (a `FileBatch`): a recovery of many files finished — a source map unpacked, say. Every file raised its own event too, but a recovery can be thousands of files and your queue holds 1024, so take the batch here and read it with `files.list({ batch: e.batch.id })` at your own pace. |
 | `entity.on_created` / `_updated` / `_deleted` | `{ entity }`: any of the three. A URL put in the Explorer calls both `url.on_created` and `entity.on_created`. Narrow it with `types`. |
 | `websocket.on_open` / `websocket.on_close` | `{ flow }`: a WebSocket connection's 101 completed, or it ended. |
 | `websocket.on_message` | `{ flow, message }`: a WebSocket message was sent or received. |
@@ -321,6 +325,86 @@ An action is active testing the user asked for, on a request they chose;
 keep to what its label says, and to the hosts the targets cover
 (`targets.match(url)`) unless the label says otherwise.
 
+
+### Commands
+
+A command is something the user types. reProxy's command line is
+
+```
+reproxy <namespace> <action> [--flags] [arguments]
+```
+
+and **a plugin's namespace is its own name**. Everything the `param-fuzzer`
+plugin adds is `reproxy param-fuzzer <action>`, so plugin.json declares
+actions, not namespaces, and no two plugins can collide: they can no more
+share a namespace than a directory.
+
+Core's namespaces (`findings`, `targets`, `plugins`, `flows`, and the rest
+of the list in reproxy's `internal/cli/namespaces.go`) are reserved, so a
+plugin *named* for one may not declare commands. It doesn't run at all, and
+says why in `reproxy plugins validate` and in the Plugins window — rename
+it, or drop its commands.
+
+```json
+"commands": [
+  {
+    "action": "run",
+    "summary": "Fuzz one parameter of a captured request",
+    "description": "Sends the request once per word, and records a finding for each answer that differs.",
+    "args": "<parameter>",
+    "function": "fuzzRun",
+    "flags": [
+      { "name": "flow", "type": "number", "required": true, "description": "the flow id to fuzz" },
+      { "name": "wordlist", "default": "common", "description": "which list to send" },
+      { "name": "quiet", "type": "boolean", "description": "only report what differed" }
+    ]
+  }
+]
+```
+
+In a plugin called `param-fuzzer`, that is `reproxy param-fuzzer run
+--flow 42 id`.
+
+| Field | |
+|---|---|
+| `action` | Required. 1–32 lower-case letters, digits and dashes, unique in the plugin. |
+| `summary` | Required. The line help lists the command with: one line, at most 80 characters. |
+| `description` | Optional. The paragraph `--help` adds under the usage line. |
+| `args` | Optional. The positional arguments, for the usage line (`"<file>..."`). They reach the function as typed. |
+| `flags` | Optional. The flags the command takes: `name` (lower-case, dashes allowed), `type` (`string`, `number`, `boolean` or `list`; inferred from `default`, else `string`), `description`, `required`, `default`, `placeholder`. `--instance`, `--json` and `--help` belong to reProxy and can't be declared. |
+| `function` | Required. An exported function of `main.ts`. |
+
+Core does the parsing. It reads the flags against what was declared, fills
+in the defaults, refuses a flag the command doesn't take, and writes the
+help — so the function is only called with an invocation it can answer, and
+a command nobody typed never enters the runtime. The function is called with
+`{ hook: "command", namespace, action, flags, args, json }`: `namespace` is
+the plugin's own name as the user typed it, `flags` holds
+every declared flag by name, with the type it was declared as (`list` is a
+`string[]`), and `json` says the user asked for machine-readable output. It
+may be `async` and may run up to five minutes, like an action.
+
+It may answer with a string to print, or with `{ output, json, code }`:
+`output` is the text, `json` is what `--json` prints instead, and `code` is
+the exit status (0 unless it says otherwise). Throwing prints the error and
+exits non-zero. Type it with `CommandHandler`:
+
+```ts
+import { flows, type CommandHandler } from "reproxy";
+
+export const fuzzRun: CommandHandler = async ({ flags, args, json }) => {
+  const flow = flows.get(flags.flow as number);
+  if (!flow) return { output: `no flow ${flags.flow}`, code: 1 };
+  const results = await fuzz(flow, args[0], flags.wordlist as string);
+  if (json) return { output: summarize(results), json: results };
+  return summarize(results);
+};
+```
+
+Commands run in whichever reProxy process the user's command line is
+talking to, so they see that process's traffic, engagement and settings —
+the same objects the plugin's hooks see.
+
 ### Match filters
 
 `match` is evaluated in Go, before anything reaches the plugin. Every field
@@ -330,14 +414,14 @@ you set must match. Within a field, any entry may match.
 |---|---|---|
 | `scope` | `any` (default), `in_scope` (a flow a target covers, or every flow while no targets are configured), `out_of_scope` | traffic, intercept, entity |
 | `targets` | target IDs | traffic, intercept, entity |
-| `hosts` | `app.test`, `*.app.test` (subdomains), or any glob; ports are ignored | traffic, intercept, entity |
-| `paths` | globs over the path without its query: `/api/*` | traffic, intercept, entity |
+| `hosts` | `app.test`, `*.app.test` (subdomains), or any glob; ports are ignored. A file hook tests the host the file was recovered from | traffic, intercept, entity, file |
+| `paths` | globs over the path without its query: `/api/*`. On a file hook, globs over the recovered file's path, which is relative to the engagement's recovered files and has no leading slash: `app.test/*`, `*.ts` | traffic, intercept, entity, file |
 | `path_regex` | an RE2 regular expression over the path and query | traffic, intercept, entity |
 | `methods` | `GET`, `POST`, … | traffic, intercept |
 | `status` | `404`, `2xx`, `500-599` | traffic, intercept |
-| `content_types` | media type globs: `application/json`, `text/*`, `application/*+json`. Request hooks test the request's Content-Type, all others the response's. | traffic, intercept |
-| `sources` | traffic: `proxy`, `replay`, `agent`, `plugin` (default: all but `plugin`); findings: `user`, `agent`, `plugin` | traffic, finding |
-| `types` | finding type IDs; for entity hooks, entity types: `domain`, `host`, `url` | finding, entity |
+| `content_types` | media type globs: `application/json`, `text/*`, `application/*+json`. Request hooks test the request's Content-Type, all others the response's; a file hook tests the recovered file's media type, so `text/*` never hands you a font. | traffic, intercept, file |
+| `sources` | traffic: `proxy`, `replay`, `agent`, `plugin` (default: all but `plugin`); findings and recovered files: `user`, `agent`, `plugin` | traffic, finding, file |
+| `types` | finding type IDs; for entity hooks, entity types: `domain`, `host`, `url`; for file hooks, a recovered file's `kind` (`source-map`, `source-map-dependency`, or whatever the plugin that recovered it used) | finding, entity, file |
 | `directions` | WebSocket message direction: `sent` (browser→server), `received` | websocket |
 
 Filter as tightly as you can. Traffic your filter turns away costs nothing.
@@ -362,7 +446,7 @@ plugin's `plugin.on_settings_change` is called.
 ## The SDK
 
 ```ts
-import { plugin, log, settings, storage, flows, findings, targets, entities, http, intercept, text, decision, edit } from "reproxy";
+import { plugin, log, settings, storage, flows, findings, files, targets, entities, http, intercept, text, decision, edit } from "reproxy";
 ```
 
 | | |
@@ -371,10 +455,11 @@ import { plugin, log, settings, storage, flows, findings, targets, entities, htt
 | `settings.get(key)`, `settings.all()` | Current setting values, secrets included. |
 | `storage.get/set/delete/keys` | Persistent JSON storage for the plugin (1 MiB). `storage.engagement.*` is kept in the open engagement's database and travels with it. |
 | `flows.get(id)`, `flows.list(q)`, `flows.search(text, { regex })` | The traffic list. |
-| `findings.record(draft)`, `findings.list(q)`, `findings.types()` | Record a finding. `notes` is required, and saying why the plugin raised it is the point. A finding with the same value merges in as another sighting. Set `hidden: true` when the value is a secret in itself — a password, a key, a session token, a card number, a national identifier — and reProxy keeps it masked on screen until the user clicks the eye beside it; leave it off for data that is sensitive but not secret, such as an email address. It changes the display only: the value is still stored, searched and handed to agents and plugins. |
+| `findings.record(draft)`, `findings.list(q)`, `findings.types()` | Record a finding. `notes` is required, and saying why the plugin raised it is the point. A finding with the same value merges in as another sighting. Set `hidden: true` when the value is a secret in itself — a password, a key, a session token, a card number, a national identifier — and reProxy keeps it masked on screen until the user clicks the eye beside it; leave it off for data that is sensitive but not secret, such as an email address. It changes the display only: the value is still stored, searched and handed to agents and plugins. Pass `files: [id, …]` (ids from `files.addAll`) to link the finding to recovered files, so it leads straight to the source reconstructed from it — the UI opens each, and `get_file` reads it (see `spa-recon`). |
+| `files.add(draft)`, `files.addAll(drafts)`, `files.list(q)`, `files.batches()`, `files.read(idOrPathOrFile, maxBytes?)` | The files the work recovered (see below). |
 | `targets.list()`, `targets.match(url)` | The targets in scope. |
 | `entities.addHost({ host, addresses, from, detail })` | Puts a host in the Explorer without a URL: a DNS name or IP address (no scheme, port or path), with its domain. `addresses` are the IP addresses the name resolves to; each goes in as a host of its own, and the name lists them in `addresses`. Resolves `{ entity, created }` for the name. Use it for what you learn about hosts rather than URLs (DNS records, certificate names); `from` makes one no target covers Related, as for `addUrl`. |
-| `entities.addUrl({ url, flowId, from, detail })`, `entities.get(keyOrUrl)`, `entities.list({ type, targetId, host, parent })`, `entities.children(key)` | The Entity Explorer. `addUrl` resolves `{ entity, created }`; it puts the URL in as discovered, with its host and domain, and a URL already there just gains the link. `get` takes an entity's key, a bare host name or address (its name host, `//name`), or a concrete URL (`https://app.test/users/12`) and returns the URL it falls under. An added URL is templated like visited ones (`/users/12` → `/users/{id}`, and `{orderId}` placeholders too), so it merges with what the traffic put there. Core already reads every response for the URLs it refers to (HTML, CSS, scripts, JSON, robots.txt, sitemaps, OpenAPI, and headers such as Location and Content-Security-Policy), so add what only your plugin can find. A URL on a host no target covers is kept but listed under Targets → Related rather than drawn, until the user promotes the host. That takes something on a target leading to it: the flow (`flowId`) the URL was found in, or, when no flow was involved, `from`, an absolute URL on a host a target covers (`https://example.com/` for a lookup made for that target; see `dnsdumpster`). |
+| `entities.addUrl({ url, flowId, from, detail })`, `entities.get(keyOrUrl)`, `entities.list({ type, targetId, host, parent })`, `entities.children(key)` | The Entity Explorer. `addUrl` resolves `{ entity, created }`; it puts the URL in as discovered, with its host and domain, and a URL already there just gains the link. `get` takes an entity's key, a bare host name or address (its name host, `//name`), or a concrete URL (`https://app.test/users/12`) and returns the URL it falls under. An added URL is templated like visited ones (`/users/12` → `/users/{id}`, and `{orderId}` placeholders too), so it merges with what the traffic put there. Core already reads every response for the URLs it refers to (HTML, CSS, scripts, JSON, robots.txt, sitemaps, OpenAPI, and headers such as Location and Content-Security-Policy), so add what only your plugin can find. A URL on a host no target covers is kept but listed under Targets → Related rather than drawn, until the user promotes the host. That takes something on a target leading to it: the flow (`flowId`) the URL was found in, or, when no flow was involved, `from`, an absolute URL on a host a target covers (`https://example.com/` for a lookup made for that target; see `precon`). |
 | `entities.set(key, name, value)`, `entities.unset(key, name)` | Write an entity's `kv` store. They resolve with the entity, and call its `on_updated` hooks; setting the value a key already has changes nothing and calls no hook. |
 | `http.send(request, options)` | Outbound HTTP (see below). |
 | `intercept.held()`, `intercept.forward(id, text?)`, `intercept.drop(id)` | Messages held for the user. |
@@ -384,6 +469,63 @@ A `Flow` carries its `request` and `response` as `Message`s. Nothing is
 decoded until you ask: `head()`, `headers()`, `header(name)`,
 `contentType()`, `text()` (dechunked and decompressed), `json()`, `raw()`,
 `body()`.
+
+### Recovered files
+
+A **recovered file** is something your plugin pulled out of the traffic and
+asked reProxy to keep: the original source a JavaScript source map carries, a
+bundle taken apart, an asset worth a closer look. You decide what is worth
+recovering and produce the bytes; core writes the file under the engagement
+(`<engagement>/recovered/…`), records where it came from, and calls the file
+hooks — which is the point of handing it over rather than keeping the text in
+a variable. A plugin that scans text for secrets hooks `file.on_created` and
+reads recovered client source with the code it already has for response
+bodies, so recovering a build makes every scanner in the user's set work on it.
+
+```ts
+import { files, log } from "reproxy";
+
+// Recovering: one recovery, one batch.
+const res = await files.addAll(
+  sources.map((s) => ({
+    path: `${host}/${bundle}/${s.path}`,   // relative; core cleans it
+    content: s.text,
+    kind: s.app ? "source-map" : "source-map-dependency",
+    flowId: flow.id,                        // where it came from
+    batchLabel: mapUrl,
+  })),
+);
+log.info(`recovered ${res.files} files (${res.unchanged} already there)`);
+
+// Scanning what someone else recovered.
+export async function scan(e: Hooks["file.on_created"]) {
+  const { text } = await files.read(e.file);
+  for (const m of textScan(text)) await findings.record({ /* … */ });
+}
+```
+
+- **Paths are relative and untrusted.** Give the tree you want
+  (`app.test/main/src/api.ts`); core cleans every segment (a scheme, `..`, a
+  drive letter, an illegal character) and never writes outside the
+  engagement's recovered files. A path with nothing safe left is refused.
+- **Recovering the same path with the same bytes changes nothing** and raises
+  no event, so a recovery can be run twice without setting every scanner off
+  again. Different bytes replace the file and raise `file.on_updated`.
+- **Use `addAll` for a recovery**, not `add` in a loop: its files share one
+  batch, it writes under one lock, it enforces the recovery limits (20,000
+  files, 512 MiB) as a whole, and it is what ends with
+  `file.on_batch_complete`. `add` is for a single file.
+- **You are not called for what you recovered yourself** unless the target
+  sets `self`, exactly as with your own traffic.
+- **The bytes stay on disk.** A `RecoveredFile` is the record — `path`,
+  `size`, `mediaType`, `text` (whether it can be read as text), `kind`,
+  `author`, `batch`, `flowId`, `url`, `host`, `entity`, `sha256`. Read the
+  content with `files.read`, which resolves `{ file, text, truncated }` and
+  returns at most 8 MiB.
+- There is no filesystem in the runtime, and this is not one: a recovered
+  file belongs to the engagement, travels with it, and is listed in reProxy's
+  Files section, in `reproxy files ls` and to the user's AI agents. Use
+  `storage` for a plugin's own state.
 
 ### Outbound requests
 
@@ -442,7 +584,7 @@ if (r.ok) log.info(r.json());
   count.
 - A plugin that fails 5 times within a minute is stopped for the session
   ("faulted"). Fix it and press Reload in the Plugins window.
-- TypeScript types are stripped, not checked. Run `reproxy plugin types <dir>`
+- TypeScript types are stripped, not checked. Run `reproxy plugins types <dir>`
   to write the SDK and a `tsconfig.json` beside your plugin, so your editor
   checks it.
 - Plugins are trusted code: they see your traffic and can send it anywhere.
@@ -451,9 +593,9 @@ if (r.ok) log.info(r.json());
 ## Testing
 
 ```
-reproxy plugin validate <dir>   check plugin.json and the exported functions
-reproxy plugin test <dir>       run test/*.test.ts (and any other *.test.ts)
-reproxy plugin test -v -run JWT <dir>
+reproxy plugins validate <dir>   check plugin.json and the exported functions
+reproxy plugins test <dir>       run test/*.test.ts (and any other *.test.ts)
+reproxy plugins test -v -run JWT <dir>
 ```
 
 Tests run in the same runtime plugins run in, against a throwaway engagement
@@ -498,5 +640,5 @@ describe("tokens", () => {
 Before committing, run every plugin's checks from this repo's root:
 
 ```
-for d in plugins/*/; do reproxy plugin validate "$d" && reproxy plugin test "$d" || break; done
+for d in plugins/*/; do reproxy plugins validate "$d" && reproxy plugins test "$d" || break; done
 ```

@@ -32,7 +32,7 @@ describe("classify", () => {
   });
 
   it("decodes a form-encoded value", () => {
-    expect(got("email", "ann%40corp.test")).toBe("field_email:personal-data:ann@corp.test");
+    expect(got("newPassword", "s3cr3t%21")).toBe("field_password:credential:s3cr3t!");
   });
 
   it("turns down names that only talk about the thing", () => {
@@ -44,7 +44,7 @@ describe("classify", () => {
   it("turns down values that don't fit the name", () => {
     expect(got("cardNumber", "4111111111111112")).toBeNull(); // fails Luhn
     expect(got("cvv", "73")).toBeNull();
-    expect(got("phone", "42")).toBeNull();
+    expect(got("dob", "nope")).toBeNull();
     expect(got("api_key", "aaaaaaaaaaaaaaaaaaaa")).toBeNull(); // no entropy
     expect(got("username", "1234")).toBeNull(); // an id, not a name
   });

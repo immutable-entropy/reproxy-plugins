@@ -18,7 +18,6 @@ const opts: Options = {
   minEntropy: 3.5,
   maxBody: 512 * 1024,
   maxPii: 128 * 1024,
-  ignoreEmails: [],
   ignoreValues: [],
   hexHashes: false,
   maxHits: 25,

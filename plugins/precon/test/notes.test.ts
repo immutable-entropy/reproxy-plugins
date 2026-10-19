@@ -1,5 +1,5 @@
 import { describe, expect, it } from "reproxy/testing";
-import { keys, mergeNotes } from "../src/notes";
+import { keys, mergeNotes } from "../src/ssl/notes";
 
 describe("mergeNotes", () => {
   it("keeps what an earlier lookup saw that this one didn't", () => {

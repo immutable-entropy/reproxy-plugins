@@ -1,0 +1,26 @@
+{
+  "name": "precon",
+  "version": "1.0-1",
+  "description": "Pre-engagement reconnaissance, driven from the command line. `reproxy precon dns` looks a domain up in DNS reconnaissance sources (DNSDumpster); `reproxy precon ssl` looks it up in the Certificate Transparency logs (crt.sh and ctlogs.dev). What the lookups find is added to the Entity Explorer and Targets → Related. Each command sends the domain name to third-party services.",
+  "author": {
+    "name": "reProxy"
+  },
+  "status": "disabled",
+  "sdk": "1",
+  "commands": [
+    {
+      "action": "dns",
+      "summary": "Look a domain up in DNS reconnaissance sources",
+      "description": "Asks DNSDumpster what host names and addresses it knows of under the domain, and adds them to the Entity Explorer and Targets → Related. Sends the domain name to api.dnsdumpster.com, a third-party service.",
+      "args": "<domain>",
+      "function": "dns"
+    },
+    {
+      "action": "ssl",
+      "summary": "Look a domain up in the Certificate Transparency logs",
+      "description": "Searches crt.sh and ctlogs.dev for the certificates naming the domain or any name under it, merges their answers, and adds every host name the certificates cover to the Entity Explorer, with names outside the domain under Targets → Related. Sends the domain name to crt.sh and api.ctlogs.dev, third-party services.",
+      "args": "<domain>",
+      "function": "ssl"
+    }
+  ]
+}

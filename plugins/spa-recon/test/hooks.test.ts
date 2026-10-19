@@ -214,3 +214,60 @@ describe("action: recover source from map", () => {
     expect(r.message).toContain("No source map");
   });
 });
+
+// A map with the app's own source plus a plain (non-framework) dependency,
+// to exercise the dependency findings.
+const depMap = JSON.stringify({
+  version: 3,
+  mappings: "AAAA",
+  names: [],
+  sources: [
+    "../../src/main.ts",
+    "../../node_modules/.pnpm/lodash@4.17.21/node_modules/lodash/lodash.js",
+    "../../node_modules/.pnpm/vue@3.4.21/node_modules/vue/dist/vue.runtime.esm-bundler.js",
+  ],
+  sourcesContent: ["const base = 'https://app.test/api'; fetch(base + '/me')", null, null],
+});
+
+describe("un-webpacking exposed maps", () => {
+  it("writes the app source to recovered files and links the exposed-map finding to them", async () => {
+    mock.target("domain", "app.test");
+    reply("app-xyz\\.js\\.map$", sourceMap);
+    await mock.dispatch("traffic.on_response_received", js("https://app.test/assets/app-xyz.js", "const x=1;\n//# sourceMappingURL=app-xyz.js.map"));
+    await idle();
+
+    // The application's own source with content was written (Login.vue had none).
+    const recovered = mock.files({});
+    expect(recovered.some((f) => f.path.endsWith("src/main.ts"))).toBe(true);
+    expect(recovered.every((f) => f.kind === "source-map")).toBe(true);
+
+    // The exposed-map finding links to a recovered file, and says so.
+    const map = mock.findings().find((f) => f.types.includes("source-map"));
+    expect(map).toBeDefined();
+    expect(map!.links.filter((l) => l.location === "recovered_file").length).toBeGreaterThan(0);
+    expect(map!.notes).toContain("recovered files");
+  });
+
+  it("does not write when the setting is off, but still records the map", async () => {
+    mock.target("domain", "app.test");
+    mock.settings({ unpack_source_maps: false });
+    reply("off-xyz\\.js\\.map$", sourceMap);
+    await mock.dispatch("traffic.on_response_received", js("https://app.test/assets/off-xyz.js", "const x=1;\n//# sourceMappingURL=off-xyz.js.map"));
+    await idle();
+    expect(mock.files({})).toHaveLength(0);
+    expect(mock.findings().some((f) => f.types.includes("source-map"))).toBe(true);
+  });
+
+  it("records bundled dependencies and their versions as findings", async () => {
+    mock.target("domain", "app.test");
+    const f = flow({
+      url: "https://app.test/assets/dep.js.map",
+      responseHeaders: { "Content-Type": "application/json" },
+      responseBody: depMap,
+    });
+    await mock.action("recover-sources", f);
+    const versions = mock.findings().filter((x) => x.types.includes("tech-version")).map((x) => x.value);
+    expect(versions).toContain("lodash 4.17.21"); // a plain dependency, source not written
+    expect(versions).toContain("vue 3.4.21"); // the framework, recorded either way
+  });
+});

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "reproxy/testing";
 import {
   detailCandidates, dropExpired, normalSerial, parseDN, readCrtsh, readCtlogs, setSANs, summarize, type Certs,
-} from "../src/certs";
+} from "../src/ssl/certs";
 import { certName, domainOf, inDomain } from "../src/names";
 
 // The same certificate as each service lists it: crt.sh keeps the serial's

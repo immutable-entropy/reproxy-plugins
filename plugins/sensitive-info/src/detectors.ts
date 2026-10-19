@@ -17,8 +17,8 @@
 //     7 ms — and the patterns are then run only on the windows of text
 //     around the places it was found. The work is bounded by the window
 //     budget rather than by the size of the body.
-//   - A format with nothing to anchor on (an email address, a card number,
-//     an SSN) has to be looked for everywhere, so those patterns — all of
+//   - A format with nothing to anchor on (a card number, an SSN) has to be
+//     looked for everywhere, so those patterns — all of
 //     them small — are run over the body up to a smaller limit of their
 //     own (Options.maxPii).
 //
@@ -39,10 +39,9 @@ import {
   type FindingType,
   type Rule,
 } from "./formats";
-import { disclosures, FINGERPRINT, FINGERPRINT_DETECTORS } from "./fingerprint";
 import { decodeClaims } from "./jwt";
 import { compose, scan as scanPattern, type Composed, type Found } from "./pattern";
-import { decodeBase64, digits, isPlaceholder, luhn, plausiblePhone, plausibleSsn, validIban } from "./validate";
+import { decodeBase64, digits, isPlaceholder, luhn, plausibleSsn, validIban } from "./validate";
 
 export interface Options {
   /** The detectors (ids) or categories (finding types) to run; empty: all. */
@@ -54,13 +53,10 @@ export interface Options {
   maxBody: number;
   /** The most of a body the patterns that can't be anchored are run over. */
   maxPii: number;
-  ignoreEmails: string[];
   ignoreValues: string[];
   hexHashes: boolean;
   /** The most hits one message may yield. */
   maxHits: number;
-  /** Report a server, technology or proxy banner only when it names a version. */
-  versionsOnly?: boolean;
 }
 
 /** Where in a message something was found. */
@@ -109,8 +105,6 @@ const FIELD_DETECTORS: { id: string; label: string; category: FindingType }[] = 
   { id: "field_bank", label: "Bank account detail", category: "payment-data" },
   { id: "field_gov_id", label: "Government identifier", category: "personal-data" },
   { id: "field_dob", label: "Date of birth", category: "personal-data" },
-  { id: "field_phone", label: "Telephone number", category: "personal-data" },
-  { id: "field_email", label: "Email address", category: "personal-data" },
   { id: "field_username", label: "User name", category: "credential" },
 ];
 
@@ -122,11 +116,7 @@ export const CATALOG: { id: string; label: string; category: FindingType }[] = [
     category: r.type,
   })),
   ...FIELD_DETECTORS,
-  ...FINGERPRINT_DETECTORS.map((d) => ({ ...d, category: FINGERPRINT })),
 ];
-
-/** The fingerprint detectors that report a banner, which "versionsOnly" can limit to versioned ones. */
-const BANNERS = ["server_banner", "tech_header", "proxy_banner"];
 
 /** enabled reports whether a detector runs, by its id or its category. */
 export function enabled(opts: Options, id: string, category: FindingType): boolean {
@@ -258,14 +248,6 @@ export function scan(input: Input, opts: Options): Hit[] {
   // the URL read as one, rather than as something in the headers.
   if (input.query) readAll(s, input.query, "query", max, opts, add);
   if (input.head) {
-    // What a response's headers give away about the stack (fingerprint.ts).
-    // A request's headers are the browser's, so they say nothing about it.
-    if (input.side === "response") {
-      for (const d of disclosures(input.head)) {
-        if (opts.versionsOnly && !d.versioned && BANNERS.indexOf(d.detector) >= 0) continue;
-        add({ ...d, type: FINGERPRINT, where: "header", secret: false });
-      }
-    }
     for (const m of scanPattern(s.headers, input.head, max)) add(fromHeader(m, s.rules));
     readAll(s, input.head, "header", max, opts, add);
   }
@@ -431,9 +413,6 @@ function fromFormat(m: Found, rules: Record<string, Rule>, where: Where, opts: O
   if (!rule) return null;
   let value = m.match.trim();
   switch (m.id) {
-    case "email":
-      if (!keepEmail(value, opts)) return null;
-      break;
     case "credit_card":
       if (!luhn(value)) return null;
       break;
@@ -442,9 +421,6 @@ function fromFormat(m: Found, rules: Record<string, Rule>, where: Where, opts: O
       break;
     case "iban":
       if (!validIban(value)) return null;
-      break;
-    case "phone":
-      if (!plausiblePhone(value)) return null;
       break;
     case "uk_nino":
       // A chance run of letters and digits inside a token looks like one.
@@ -475,7 +451,6 @@ function fromField(m: Found, where: Where, opts: Options): Pending | null {
   if (!name || !value) return null;
   const field = classify(name, value, opts.minEntropy);
   if (!field) return null;
-  if (field.id === "field_email" && !keepEmail(field.value, opts)) return null;
   const hit: Pending = {
     detector: field.id,
     label: field.label,
@@ -488,18 +463,4 @@ function fromField(m: Found, where: Where, opts: Options): Pending | null {
   if (field.note) hit.note = field.note;
   if (field.needsCredential) hit.pending = true;
   return hit;
-}
-
-/** keepEmail drops the addresses that aren't a person's: an ignored domain,
- *  and the asset names (logo@2x.png) that look like one. */
-function keepEmail(value: string, opts: Options): boolean {
-  const at = value.indexOf("@");
-  if (at <= 0) return false;
-  const domain = value.slice(at + 1).toLowerCase();
-  if (/\.(?:png|jpe?g|gif|svg|webp|avif|css|js|mjs|ico|woff2?|ttf|map)$/.test(domain)) return false;
-  for (const d of opts.ignoreEmails) {
-    const ignored = d.toLowerCase().replace(/^@/, "");
-    if (ignored && (domain === ignored || domain.endsWith("." + ignored))) return false;
-  }
-  return true;
 }

@@ -12,8 +12,6 @@
 // browser, not from the target. A head is small, so this is plain string
 // work in the plugin, with no need for text.scan.
 
-import type { FindingType } from "./formats";
-
 export interface Disclosure {
   detector: string;
   label: string;
@@ -23,11 +21,13 @@ export interface Disclosure {
   key: string;
   note: string;
   fields?: Record<string, string>;
-  /** True when it names a version (see "fingerprint_versions_only"). */
+  /** True when it names a version (see the "versions_only" setting). */
   versioned: boolean;
 }
 
-export const FINGERPRINT: FindingType = "fingerprint";
+/** The banner detectors, which the "versions_only" setting can limit to the
+ *  ones that name a version. */
+export const BANNERS = ["server_banner", "tech_header", "proxy_banner"];
 
 /** The detectors, for the catalog and the settings. */
 export const FINGERPRINT_DETECTORS: { id: string; label: string }[] = [

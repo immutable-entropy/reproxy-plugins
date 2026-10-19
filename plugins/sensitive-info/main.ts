@@ -13,29 +13,24 @@
 // the request it was seen in and to where in it the secret was; the same
 // secret seen again just gains a sighting. A value that is a secret in
 // itself is recorded hidden, so reProxy keeps it masked until the user
-// clicks the eye beside it — personal data that identifies rather than
-// authenticates (an address, a telephone number, a date of birth) is left
-// readable. Nothing is held: the scanning happens after the message has
-// been forwarded.
+// clicks the eye beside it — an identifier that endangers (a Social Security
+// or passport number) is masked, while a date of birth, which identifies but
+// doesn't authenticate, is left readable. Nothing is held: the scanning
+// happens after the message has been forwarded.
 //
-// Response headers are also read for what they give away about the stack
-// (src/fingerprint.ts): the server and its version, the framework, the
-// build, internal hosts and addresses, debugging aids. Those headers are on
-// every response, so each is recorded once per host per run, with notes that
-// don't name the request, so that a finding gains one sighting per host
-// rather than one per response.
+// This is the highly sensitive half of the old "sensitive-info" plugin:
+// secrets and the personal data that is a serious finding in itself. Contact
+// details (emails, telephone numbers, addresses) and the external footprint
+// now belong to the "footprint" plugin, and what response headers give away
+// about the stack to the "stack-disclosure" plugin.
 
 import { findings, log, settings, type Flow, type Hooks, type Location, type Message } from "reproxy";
 import { reset, scan, type Hit, type Input, type Options, type Where } from "./src/detectors";
 import { redact } from "./src/redact";
 
-/** The stack disclosures recorded this run, by value and host. */
-const disclosed = new Set<string>();
-
 /** Module state is per run, so it is cleared when the plugin loads. */
 export function load(): void {
   reset();
-  disclosed.clear();
 }
 
 export async function scanRequest({ flow }: Hooks["traffic.on_request_forwarded"]): Promise<void> {
@@ -56,14 +51,7 @@ export async function scanWebSocket({ flow, message }: Hooks["websocket.on_messa
 
 async function record(flow: Flow, side: "request" | "response", input: Input, what = ""): Promise<void> {
   const opts = options();
-  const hits = scan(input, opts).filter((hit) => {
-    if (hit.type !== "fingerprint") return true;
-    const key = `${hit.value}\u0000${flow.host}`;
-    if (disclosed.has(key)) return false;
-    if (disclosed.size > 10000) disclosed.clear();
-    disclosed.add(key);
-    return true;
-  });
+  const hits = scan(input, opts);
   if (hits.length === 0) return;
   for (const hit of hits) {
     log.debug(`${hit.detector} in flow ${flow.id}: ${redact(hit.value)}`);
@@ -97,10 +85,8 @@ function options(): Options {
     minEntropy: settings.get<number>("min_entropy"),
     maxBody: settings.get<number>("max_body_kb") * 1024,
     maxPii: settings.get<number>("max_pii_kb") * 1024,
-    ignoreEmails: settings.get<string[]>("ignore_emails"),
     ignoreValues: settings.get<string[]>("ignore_values"),
     hexHashes: settings.get<boolean>("hex_hashes"),
-    versionsOnly: settings.get<boolean>("fingerprint_versions_only") === true,
     maxHits: settings.get<number>("max_findings"),
   };
 }
@@ -126,9 +112,6 @@ function draft(flow: Flow, side: "request" | "response", hit: Hit, what: string)
 
 /** notes says what was found, where, and why it matters. */
 function notes(flow: Flow, side: "request" | "response", hit: Hit, what: string): string {
-  // The same on every host, so sightings merge into one finding; the
-  // finding's links say where it was seen.
-  if (hit.type === "fingerprint") return `${hit.label}, in the ${hit.key} response header. ${hit.note}`;
   const place = what || `the ${side} ${where(hit.where)}`;
   let text = `${hit.label} in ${place} of ${flow.method} ${flow.url}.`;
   if (hit.key) text += ` The field was named "${hit.key}".`;

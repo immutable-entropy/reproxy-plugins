@@ -10,13 +10,13 @@
 // body could hold the format at all, and the pattern is only ever run
 // around the places it could be, which is what keeps a 512 KiB body
 // affordable (see detectors.ts). A rule with nothing to anchor on, such as
-// an email address or a card number, is run over the body itself, up to a
+// a card number or an SSN, is run over the body itself, up to a
 // smaller limit.
 
 import type { Branch } from "./pattern";
 
 /** The finding types this plugin declares (see plugin.json). */
-export type FindingType = "credential" | "secret-key" | "token" | "hash" | "personal-data" | "payment-data" | "fingerprint";
+export type FindingType = "credential" | "secret-key" | "token" | "hash" | "personal-data" | "payment-data";
 
 export interface Rule {
   id: string;
@@ -370,16 +370,13 @@ export const HEX_HASH_RULE: Rule = {
   pattern: `\\b(?:[0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64}|[0-9a-f]{128})\\b`,
 };
 
-/** Personal data: what identifies a person rather than authenticates them.
- *  None of it has a literal to anchor on, and each is checked before it is
- *  reported (see validate.ts). */
+/** Highly sensitive personal data: identifiers and payment details, the
+ *  kind of personal data that is a serious finding in itself. Contact
+ *  details that identify but don't endanger — email addresses, telephone
+ *  numbers — are the footprint plugin's, not this one's. None of it has a
+ *  literal to anchor on, and each is checked before it is reported (see
+ *  validate.ts). */
 export const PII_RULES: Rule[] = [
-  {
-    id: "email",
-    label: "Email address",
-    type: "personal-data",
-    pattern: `\\b[A-Za-z0-9._%+'-]{1,64}@[A-Za-z0-9-]{1,63}(?:\\.[A-Za-z0-9-]{1,63}){0,8}\\.[A-Za-z]{2,24}\\b`,
-  },
   {
     id: "credit_card",
     label: "Payment card number",
@@ -394,7 +391,6 @@ export const PII_RULES: Rule[] = [
     type: "payment-data",
     pattern: `\\b[A-Z]{2}[0-9]{2}(?:[ ]?[A-Z0-9]{4}){2,7}(?:[ ]?[A-Z0-9]{1,3})?\\b`,
   },
-  { id: "phone", label: "Telephone number", type: "personal-data", pattern: `\\+[1-9][0-9]{7,14}\\b` },
   { id: "uk_nino", label: "UK National Insurance number", type: "personal-data", pattern: `\\b[A-CEGHJ-PR-TW-Z]{2}[0-9]{6}[A-D]\\b` },
 ];
 
@@ -431,13 +427,9 @@ const MASKED_PII = ["ssn", "uk_nino", "field_gov_id"];
  * isSecret reports whether a finding's value should reach the user masked
  * (reProxy hides it behind the eye beside the value). Everything that
  * authenticates — a password, a key, a token, a hash, a card — is masked;
- * personal data only when it is an identifier of its own; a disclosure of
- * the stack (fingerprint.ts) never.
+ * personal data only when it is an identifier of its own.
  */
 export function isSecret(type: FindingType, detector: string): boolean {
-  // What a site runs on is something to hide from attackers, not from the
-  // tester's screen.
-  if (type === "fingerprint") return false;
   if (type === "personal-data") return MASKED_PII.indexOf(detector) >= 0;
   return true;
 }

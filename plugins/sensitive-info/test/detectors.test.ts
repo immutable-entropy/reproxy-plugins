@@ -7,7 +7,6 @@ const base: Options = {
   minEntropy: 3.5,
   maxBody: 1 << 20,
   maxPii: 1 << 20,
-  ignoreEmails: ["example.com"],
   ignoreValues: [],
   hexHashes: false,
   maxHits: 100,
@@ -202,10 +201,6 @@ describe("authorization headers", () => {
 });
 
 describe("personal and payment data", () => {
-  it("finds email addresses, skipping ignored domains and asset names", () => {
-    expect(body("contact dev@corp.test or a@example.com, see logo@2x.png")).toEqual(["email=dev@corp.test"]);
-  });
-
   it("finds card numbers that pass Luhn, and no others", () => {
     expect(body("card 4111 1111 1111 1111 here")).toEqual(["credit_card=4111 1111 1111 1111"]);
     expect(body("order 4111111111111112")).toEqual([]);
@@ -227,9 +222,8 @@ describe("personal and payment data", () => {
     expect(body("iban GB82 WEST 1234 5698 7654 33")).toEqual([]);
   });
 
-  it("finds phone numbers and dates of birth in named fields", () => {
-    const got = body(`{"phone":"+14155550123","dob":"1981-04-02","nickname":"ace"}`);
-    expect(got).toContain("phone=+14155550123");
+  it("finds a date of birth in a named field", () => {
+    const got = body(`{"dob":"1981-04-02","nickname":"ace"}`);
     expect(got).toContain("field_dob=1981-04-02");
   });
 
@@ -240,19 +234,19 @@ describe("personal and payment data", () => {
 
 describe("settings", () => {
   it("runs only the detectors listed", () => {
-    expect(body("AKIAIOSFODNN7EXAMPLE dev@corp.test", { detectors: ["email"] })).toEqual(["email=dev@corp.test"]);
+    expect(body("AKIAIOSFODNN7EXAMPLE and ssn 234-56-7890", { detectors: ["ssn"] })).toEqual(["ssn=234-56-7890"]);
   });
 
   it("takes a whole category", () => {
-    const got = body("AKIAIOSFODNN7EXAMPLE dev@corp.test", { detectors: ["secret-key"] });
+    const got = body("AKIAIOSFODNN7EXAMPLE and ssn 234-56-7890", { detectors: ["secret-key"] });
     expect(got).toEqual(["aws_access_key=AKIAIOSFODNN7EXAMPLE"]);
   });
 
   it("skips what it is told to skip", () => {
-    expect(body("AKIAIOSFODNN7EXAMPLE dev@corp.test", { skip: ["personal-data"] })).toEqual([
+    expect(body("AKIAIOSFODNN7EXAMPLE and ssn 234-56-7890", { skip: ["personal-data"] })).toEqual([
       "aws_access_key=AKIAIOSFODNN7EXAMPLE",
     ]);
-    expect(body("AKIAIOSFODNN7EXAMPLE dev@corp.test", { skip: ["aws_access_key"] })).toEqual(["email=dev@corp.test"]);
+    expect(body("AKIAIOSFODNN7EXAMPLE and ssn 234-56-7890", { skip: ["aws_access_key"] })).toEqual(["ssn=234-56-7890"]);
   });
 
   it("ignores the values it is told to ignore", () => {
@@ -260,7 +254,7 @@ describe("settings", () => {
   });
 
   it("stops at the cap", () => {
-    const many = ["a@corp.test", "b@corp.test", "c@corp.test", "d@corp.test"].join(" ");
+    const many = ["AKIAIOSFODNN7EXAMPL1", "AKIAIOSFODNN7EXAMPL2", "AKIAIOSFODNN7EXAMPL3", "AKIAIOSFODNN7EXAMPL4"].join(" ");
     expect(body(many, { maxHits: 2 })).toHaveLength(2);
   });
 

@@ -23,7 +23,7 @@
 // Everything is checked as it is read: the replies are outside input, and
 // a field that isn't what it should be is skipped, not trusted.
 
-import { certName, hostOf, inDomain } from "./names";
+import { certName, hostOf, inDomain } from "../names";
 
 export type Source = "crt.sh" | "ctlogs.dev";
 export const sources: Source[] = ["crt.sh", "ctlogs.dev"];

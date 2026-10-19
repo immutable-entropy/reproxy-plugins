@@ -1,19 +1,5 @@
-import { describe, it, expect, mock } from "reproxy/testing";
-import { scan, type Options } from "../src/detectors";
-import { decodeBigIP, disclosures, privateAddresses } from "../src/fingerprint";
-import { load } from "../main";
-
-const base: Options = {
-  detectors: [],
-  skip: [],
-  minEntropy: 3.5,
-  maxBody: 1 << 20,
-  maxPii: 1 << 20,
-  ignoreEmails: [],
-  ignoreValues: [],
-  hexHashes: false,
-  maxHits: 100,
-};
+import { describe, expect, it } from "reproxy/testing";
+import { decodeBigIP, disclosures, privateAddresses } from "../src/disclosures";
 
 const head = (...lines: string[]) => ["HTTP/1.1 200 OK", ...lines].join("\r\n") + "\r\n\r\n";
 const found = (h: string) => disclosures(h).map((d) => `${d.detector}=${d.value}`);
@@ -118,47 +104,5 @@ describe("disclosures", () => {
 
   it("leaves ordinary headers alone", () => {
     expect(found(head("Content-Type: text/html", "Cache-Control: no-store", "Via: 1.1", "Date: Tue, 01 Jan 2030 00:00:00 GMT"))).toEqual([]);
-  });
-});
-
-describe("scan", () => {
-  it("reads a response's headers, not a request's", () => {
-    const h = head("Server: Apache/2.4.41");
-    expect(scan({ side: "response", head: h }, base).map((x) => x.type)).toEqual(["fingerprint"]);
-    expect(scan({ side: "request", head: "GET / HTTP/1.1\r\nServer: Apache/2.4.41\r\n\r\n" }, base)).toEqual([]);
-  });
-
-  it("records a disclosure readable, never hidden", () => {
-    const [hit] = scan({ side: "response", head: head("X-Powered-By: PHP/7.4.3") }, base);
-    expect(hit.secret).toBe(false);
-  });
-
-  it("drops bare banners when only versions are wanted, and the whole category when skipped", () => {
-    const h = head("Server: nginx", "X-Powered-By: PHP/8.1.2", "X-Backend-Server: web-03");
-    expect(scan({ side: "response", head: h }, { ...base, versionsOnly: true }).map((x) => x.detector)).toEqual(["tech_header", "internal_host"]);
-    expect(scan({ side: "response", head: h }, { ...base, skip: ["fingerprint"] })).toEqual([]);
-    expect(scan({ side: "response", head: h }, { ...base, detectors: ["server_banner"] }).map((x) => x.detector)).toEqual(["server_banner"]);
-  });
-});
-
-describe("recording", () => {
-  it("records a disclosure once per host, with notes that merge", async () => {
-    load();
-    const response = (url: string) => ({
-      url,
-      responseHeaders: { "Content-Type": "text/html", Server: "Apache/2.4.41 (Ubuntu)" },
-      responseBody: "<p>hello</p>",
-    });
-    await mock.dispatch("traffic.on_response_received", response("https://app.test/a"));
-    await mock.dispatch("traffic.on_response_received", response("https://app.test/b"));
-    await mock.dispatch("traffic.on_response_received", response("https://api.app.test/c"));
-    const found = mock.findings().filter((f) => f.types[0] === "fingerprint");
-    expect(found).toHaveLength(1);
-    expect(found[0].value).toBe("Server: Apache/2.4.41 (Ubuntu)");
-    expect(found[0].hidden).toBe(false);
-    expect(found[0].links.map((l) => l.url)).toEqual(["https://app.test/a", "https://api.app.test/c"]);
-    expect(found[0].links[0].location).toBe("response_header");
-    expect(found[0].notes.split("Web server banner")).toHaveLength(2); // written once
-    expect(found[0].notes).toContain("ServerTokens Prod");
   });
 });

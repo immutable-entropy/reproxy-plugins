@@ -1,5 +1,6 @@
 import { describe, expect, it } from "reproxy/testing";
-import { domainOf, emptyLookup, isHostName, isIP, readPage } from "../src/records";
+import { emptyLookup, readPage } from "../src/dns/records";
+import { domainOf, isHostName, isIP } from "../src/names";
 
 const all = { cname: true, mx: true, ns: true };
 

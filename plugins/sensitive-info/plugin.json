@@ -1,7 +1,7 @@
 {
   "name": "sensitive-info",
-  "version": "1.2",
-  "description": "Scans requests, responses and WebSocket messages for credentials, keys, tokens, password hashes and personal data — in headers, query strings and bodies — and response headers for what they give away about the stack (server and framework versions, internal hosts and addresses, debugging left on). Each is recorded as a finding linked to the request it was seen in. It only reads traffic: nothing is held, changed or sent.",
+  "version": "1.3",
+  "description": "Scans requests, responses and WebSocket messages for credentials, keys, tokens, password hashes and highly sensitive personal data — payment cards, bank and government identifiers, dates of birth — in headers, query strings and bodies. Each is recorded as a finding linked to the request it was seen in. It only reads traffic: nothing is held, changed or sent. Contact details and the external footprint are the companion \"footprint\" plugin's; stack-disclosure headers are the \"stack-disclosure\" plugin's.",
   "author": {
     "name": "Kayleigh",
     "email": null
@@ -14,8 +14,7 @@
     { "id": "token", "name": "Token", "color": "#ef6c00" },
     { "id": "hash", "name": "Password Hash", "color": "#00796b" },
     { "id": "personal-data", "name": "Personal Data", "color": "#6a1b9a" },
-    { "id": "payment-data", "name": "Payment Data", "color": "#1565c0" },
-    { "id": "fingerprint", "name": "Stack Disclosure", "color": "#546e7a" }
+    { "id": "payment-data", "name": "Payment Data", "color": "#1565c0" }
   ],
   "targets": [
     {
@@ -63,14 +62,14 @@
       "key": "detectors",
       "type": "list",
       "label": "Detectors to run",
-      "description": "Leave empty to run every detector. Otherwise list detector ids (aws_access_key, field_password, …) or whole categories (credential, secret-key, token, hash, personal-data, payment-data, fingerprint). The plugin's README lists every id.",
+      "description": "Leave empty to run every detector. Otherwise list detector ids (aws_access_key, field_password, …) or whole categories (credential, secret-key, token, hash, personal-data, payment-data). The plugin's README lists every id.",
       "default": []
     },
     {
       "key": "skip_detectors",
       "type": "list",
       "label": "Detectors to skip",
-      "description": "Detector ids or categories never to run, whatever the list above says. Use this to silence one noisy detector (email, phone) or a whole category.",
+      "description": "Detector ids or categories never to run, whatever the list above says. Use this to silence one noisy detector (field_dob, uk_nino) or a whole category.",
       "default": []
     },
     {
@@ -98,15 +97,8 @@
       "key": "hide_secrets",
       "type": "boolean",
       "label": "Hide secret values",
-      "description": "A finding whose value is a secret in itself — a password, a key, a token, a hash, a card number, a national identifier — is recorded hidden, so reProxy masks it until you click the eye beside the value. Email addresses, telephone numbers and dates of birth are always left readable.",
+      "description": "A finding whose value is a secret in itself — a password, a key, a token, a hash, a card number, a Social Security or passport number — is recorded hidden, so reProxy masks it until you click the eye beside the value. A date of birth, which identifies but doesn't authenticate, is always left readable.",
       "default": true
-    },
-    {
-      "key": "fingerprint_versions_only",
-      "type": "boolean",
-      "label": "Only report server and framework banners that name a version",
-      "description": "Off: \"Server: nginx\" is a finding as well as \"Server: nginx/1.18.0\". On: only a banner with a version is. Internal hosts and addresses, build numbers, debugging headers and framework cookies are reported either way. Skip the fingerprint category to turn all of them off.",
-      "default": false
     },
     {
       "key": "max_findings",
@@ -126,14 +118,8 @@
       "key": "max_pii_kb",
       "type": "number",
       "label": "Largest body scanned for personal data (KiB)",
-      "description": "An email address, a card number or an SSN has no fixed text to search for first, so those patterns have to read the body itself, which costs about 0.3 ms per KiB. This keeps that bounded; every other detector still covers the whole body.",
+      "description": "A card number or an SSN has no fixed text to search for first, so those patterns have to read the body itself, which costs about 0.3 ms per KiB. This keeps that bounded; every other detector still covers the whole body.",
       "default": 128
-    },
-    {
-      "key": "ignore_emails",
-      "type": "list",
-      "label": "Email domains to ignore",
-      "default": ["example.com", "example.org", "example.net", "sentry.io", "w3.org", "schema.org", "googleapis.com"]
     },
     {
       "key": "ignore_values",

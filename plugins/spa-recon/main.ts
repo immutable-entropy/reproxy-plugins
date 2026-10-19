@@ -27,9 +27,9 @@
 // Work is remembered per engagement: a manifest is looked for once per
 // origin, a map fetched once, whether the app restarts or not.
 
-import { entities, findings, http, log, settings, storage, targets, text, type ActionHandler, type Flow, type Hooks, type Message, type Response } from "reproxy";
+import { entities, files, findings, http, log, settings, storage, targets, text, type ActionHandler, type FileDraft, type Flow, type Hooks, type Message, type Response } from "reproxy";
 import { anyFramework, detectHtml, sourceMapRef, type Asset } from "./src/detect";
-import { appSources, frameworkVersions, mapFramework, readSourceMap, type SourceMap } from "./src/sourcemap";
+import { allDeps, appSources, frameworkVersions, mapFramework, readSourceMap, type SourceMap } from "./src/sourcemap";
 import { label, nameOf } from "./src/frameworks";
 import { recoverFiles } from "./src/reconstruct";
 import { MANIFEST_PATHS, readViteManifest } from "./src/manifest";
@@ -154,7 +154,12 @@ async function considerMap(mapUrl: string, fromUrl: string): Promise<void> {
   }
   const map = readSourceMap(res.json());
   if (!map) return; // not a source map (a 404 page, an HTML error)
-  await recordMap(mapUrl, fromUrl, res.flowId, map);
+  // Un-webpack the map to the engagement's recovered files, when asked and
+  // the map carries the source; the finding then links to what was written.
+  const recovered = settings.get<boolean>("unpack_source_maps") !== false && map.hasContent
+    ? await unpackMap(mapUrl, map, fromUrl, res.flowId)
+    : undefined;
+  await recordMap(mapUrl, fromUrl, res.flowId, map, recovered);
 
   if (settings.get<boolean>("add_discovered_urls") !== false) {
     const cap = clamp(settings.get<number>("max_urls_per_map"), 100, 0, 1000);
@@ -166,7 +171,7 @@ async function considerMap(mapUrl: string, fromUrl: string): Promise<void> {
   }
 }
 
-async function recordMap(mapUrl: string, fromUrl: string, flowId: number, map: ReturnType<typeof readSourceMap> | undefined): Promise<void> {
+async function recordMap(mapUrl: string, fromUrl: string, flowId: number, map: ReturnType<typeof readSourceMap> | undefined, recovered?: Recovered): Promise<void> {
   let notes = `A JavaScript source map is served at ${mapUrl}. Source maps let an attacker recover the application's original, un-minified client source — its routes, client-side logic and API calls — so one on a production host is an information disclosure worth fixing (stop publishing .map files, or keep them behind access control).`;
   const fields: Record<string, string> = { source_map: mapUrl, referenced_by: fromUrl };
 
@@ -200,59 +205,174 @@ async function recordMap(mapUrl: string, fromUrl: string, flowId: number, map: R
     }
     if (map.hasContent) notes += `\n\nIt also carries the original source text (sourcesContent), so the client source can be read directly.`;
     for (const d of deps) recordVersion(d.name, d.version, `the source map ${mapUrl}`, flowId);
+    if (settings.get<boolean>("record_dependencies") !== false) recordDependencies(map, mapUrl, flowId);
     log.info(`source map exposed: ${mapUrl} (${app.length} app files, ${deps.length} framework versions)`);
   } else {
     log.info(`source map exposed (not parsed, too large): ${mapUrl}`);
     notes += `\n\nThe map is larger than the parse limit, so it was recorded as exposed but not read; raise "Largest source map parsed" to extract from it.`;
   }
 
+  if (recovered && recovered.fileIds.length > 0) {
+    fields.recovered_files = String(recovered.files);
+    fields.recovered_directory = recovered.dir;
+    notes += `\n\nThe application's source was recovered to the engagement's recovered files (${recovered.files} files under ${recovered.dir}); the links below open them. `;
+    if (recovered.urls > 0) {
+      fields.urls_found = String(recovered.urls);
+      fields.urls_in_scope = String(recovered.inScope);
+      notes += `Mining the recovered source turned up ${recovered.urls} URLs it references, ${recovered.inScope} of them in scope`;
+      if (recovered.sample.length > 0) {
+        notes += `:\n- ` + recovered.sample.join("\n- ") + (recovered.inScope > recovered.sample.length ? "\n- …" : "");
+      } else {
+        notes += ".";
+      }
+      notes += `\n\nThe in-scope URLs are in the Entity Explorer; all discovered URLs are there too (off-target ones under Targets → Related).`;
+    }
+  }
+
   try {
-    await findings.record({ value: mapUrl, types: ["source-map"], notes, fields, flowId: flowId || undefined, location: flowId ? "response_body" : undefined });
+    await findings.record({
+      value: mapUrl,
+      types: ["source-map"],
+      notes,
+      fields,
+      flowId: flowId || undefined,
+      location: flowId ? "response_body" : undefined,
+      files: recovered ? recovered.fileIds : undefined,
+    });
   } catch (err) {
     log.error(`recording the source map: ${String(err)}`);
   }
 }
 
+// ---- Un-webpacking: recover the app source to disk ----------------------------
+
+/** What one unpackMap wrote and found, for the finding and the action result. */
+interface Recovered {
+  /** The recovered files' ids, for linking the finding to them. */
+  fileIds: number[];
+  /** How many files were written. */
+  files: number;
+  /** The directory they were written under. */
+  dir: string;
+  /** URLs mined from the recovered source, and how many are in scope. */
+  urls: number;
+  inScope: number;
+  /** A sample of the in-scope URLs, for the finding's notes. */
+  sample: string[];
+}
+
+// unpackMap reconstructs the application's own source files from a map and
+// writes them to the engagement's recovered files (files.addAll, which
+// creates a File object per file and keeps them inside the recovered-files
+// root whatever the path says), then mines each recovered file for the URLs
+// it references — resolved against the site, so a relative "/api/..." becomes
+// a real URL. Only the application's own source is written; a dependency's
+// source is not (its version is recorded as a finding instead). Returns
+// undefined when the map carries no application source to recover.
+async function unpackMap(mapUrl: string, map: SourceMap, fromUrl: string, flowId: number): Promise<Recovered | undefined> {
+  const appFiles = recoverFiles(map).filter((f) => f.app);
+  if (appFiles.length === 0) return undefined;
+
+  // Lay the files out under the map's own host and path, so two maps never
+  // collide; core cleans the path and keeps it inside the recovered root.
+  const base = mapUrl.replace(/^https?:\/\//i, "").replace(/[?#].*$/, "") + "/";
+  const drafts: FileDraft[] = appFiles.map((f) => ({
+    path: base + f.path,
+    content: f.content,
+    kind: "source-map",
+    batch: mapUrl,
+    batchLabel: `source map ${mapUrl}`,
+    flowId: flowId || undefined,
+    url: fromUrl,
+    notes: `Recovered from the source map ${mapUrl}.`,
+  }));
+
+  let rec;
+  try {
+    rec = await files.addAll(drafts);
+  } catch (err) {
+    log.error(`${mapUrl}: couldn't write the recovered source: ${String(err)}`);
+    return undefined;
+  }
+
+  // Mine the recovered source for the URLs it calls. Every URL goes to the
+  // Explorer (core scopes and suppresses it); the in-scope ones are counted
+  // and sampled for the finding.
+  const origin = originOf(fromUrl) || originOf(mapUrl);
+  const seen = new Set<string>();
+  const sample: string[] = [];
+  let urls = 0;
+  let inScope = 0;
+  const overall = 5000;
+  for (const f of appFiles) {
+    if (urls >= overall) break;
+    for (const u of text.urls(f.content, origin, "application/javascript", 300)) {
+      if (seen.has(u)) continue;
+      seen.add(u);
+      addUrlSafe(u, flowId || undefined, `spa-recon:recovered ${f.path}`, fromUrl);
+      urls++;
+      if (targets.match(u)) {
+        inScope++;
+        if (sample.length < 20) sample.push(u);
+      }
+      if (urls >= overall) break;
+    }
+  }
+
+  log.info(`unpacked ${rec.recorded.length} source files from ${mapUrl} to ${rec.dir}; mined ${urls} URLs (${inScope} in scope)`);
+  return { fileIds: rec.recorded.map((r) => r.id), files: rec.files, dir: rec.dir, urls, inScope, sample };
+}
+
+// recordDependencies records every bundled dependency a map reveals (and its
+// version) as a Technology Version finding. Their source is not written to
+// disk, so the finding is the record of what is shipped. Frameworks are left
+// to frameworkVersions, which gives them a richer note.
+function recordDependencies(map: SourceMap, mapUrl: string, flowId: number): void {
+  const frameworks = new Set(frameworkVersions(map).map((d) => d.name));
+  const cap = clamp(settings.get<number>("max_dependency_findings"), 200, 0, 5000);
+  if (cap <= 0) return;
+  let n = 0;
+  for (const d of allDeps(map)) {
+    if (frameworks.has(d.name)) continue;
+    if (n >= cap) {
+      log.info(`${mapUrl}: more than ${cap} dependencies; raise "Most dependency findings per source map" to record them all`);
+      break;
+    }
+    n++;
+    findings
+      .record({
+        value: `${d.name} ${d.version}`,
+        types: ["tech-version"],
+        notes: `${d.name} ${d.version} is bundled into the front end, revealed by the source map ${mapUrl}. Knowing the exact version lets an attacker look up the vulnerabilities it has; check it against its advisories and keep it up to date.`,
+        fields: { package: d.name, version: d.version, evidence: `the source map ${mapUrl}`, dependency: "true" },
+        flowId: flowId || undefined,
+        location: flowId ? "response_body" : undefined,
+      })
+      .catch((err) => log.error(`recording ${d.name} ${d.version}: ${String(err)}`));
+  }
+}
+
 // ---- Action: recover the source from a map ------------------------------------
 
-// Run from the traffic list's right-click menu on a bundle or a .map. It
-// reconstructs the original source files the map embeds ("un-webpacking"),
-// then mines every recovered file for the URLs and API endpoints it
-// references — far more than the passive scan of the raw map does, because
-// each file is read as its own source with the site as the base, so a
-// relative "/api/..." becomes a real URL in the Explorer. The standard
-// source-map finding and version findings are recorded too, so the action
-// stands on its own if the passive hooks never ran.
+// Run from the traffic list's right-click menu on a bundle or a .map. It does
+// the same un-webpacking the passive path does when the setting is on — write
+// the application's source to the engagement's recovered files, mine each for
+// the URLs it calls, and record the exposed-map finding linked to the files —
+// so it stands on its own if the passive hook never ran or the setting is off.
 export const recoverSources: ActionHandler = async ({ flow }) => {
   const got = await obtainMap(flow);
   if (!got) return "No source map found for this flow (no sourcesContent to recover).";
   const { mapUrl, map, fromUrl, flowId } = got;
 
-  const files = recoverFiles(map);
-  if (files.length === 0) return `${mapUrl} is a source map, but carries no embedded source (sourcesContent) to recover.`;
+  const recovered = await unpackMap(mapUrl, map, fromUrl, flowId);
+  if (!recovered) return `${mapUrl} is a source map, but carries no embedded application source (sourcesContent) to recover.`;
 
-  // Mine each app file for the URLs it references, resolved against the site.
-  const origin = originOf(fromUrl) || originOf(mapUrl);
-  const seen = new Set<string>();
-  let urls = 0;
-  const overall = 5000;
-  for (const f of files) {
-    if (!f.app || urls >= overall) continue;
-    for (const u of text.urls(f.content, origin, "application/javascript", 300)) {
-      if (seen.has(u)) continue;
-      seen.add(u);
-      addUrlSafe(u, flowId || undefined, `spa-recon:source ${f.path}`, fromUrl);
-      if (++urls >= overall) break;
-    }
-  }
+  // Record the exposed-map finding (with the file links and discovered URLs),
+  // the versions and the framework confirmation, the same way the passive
+  // path would, so a deliberate run is complete.
+  await recordMap(mapUrl, fromUrl, flowId, map, recovered);
 
-  // Record the exposed-map finding (and versions, and the framework confirmation)
-  // the same way the passive path would, so a deliberate run is complete.
-  await recordMap(mapUrl, fromUrl, flowId, map);
-
-  const app = files.filter((f) => f.app).length;
-  log.info(`recovered ${files.length} source files from ${mapUrl} (${app} app); mined ${urls} URLs into the Explorer`);
-  return `Recovered ${files.length} source files (${app} the app's own); added ${urls} URLs to the Explorer.`;
+  return `Recovered ${recovered.files} application source files to ${recovered.dir}; added ${recovered.urls} URLs to the Explorer (${recovered.inScope} in scope).`;
 };
 
 /** The map behind a flow: its own body if it is one, else the map its bundle names. */
