@@ -642,3 +642,5 @@ Before committing, run every plugin's checks from this repo's root:
 ```
 for d in plugins/*/; do reproxy plugins validate "$d" && reproxy plugins test "$d" || break; done
 ```
+
+~~
