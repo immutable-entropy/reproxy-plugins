@@ -39,6 +39,9 @@ import { authorityOf, dirOf, originOf, resolveUrl } from "./src/url";
 const probedKey = "probed_origins";
 const mapsKey = "fetched_maps";
 
+/** At most this many fetched URLs are remembered; the oldest are dropped. */
+const maxRemembered = 2000;
+
 /** DNSDumpster-style light pacing so active probes don't burst. */
 let gapMs = 150;
 let lastSend = 0;
@@ -54,6 +57,16 @@ export function load(_e?: Hooks["plugin.on_load"]): void {
   triedMaps.clear();
   triedOrigins.clear();
   chain = Promise.resolve();
+}
+
+/**
+ * onEngagement starts again when another engagement is opened. What was
+ * fetched belongs to the engagement it was fetched for — along with the
+ * findings and the recovered files it produced — so the new one is worked
+ * out from its own record rather than from the last one's.
+ */
+export function onEngagement(_e?: Hooks["engagement.on_opened"]): void {
+  load();
 }
 
 /** For tests: the pause between active requests, and the work queued so far. */
@@ -523,7 +536,12 @@ async function remember(key: string, value: string, flag?: boolean): Promise<voi
       await storage.engagement.set(key, m);
     } else {
       const list = (await storage.engagement.get<string[]>(key)) || [];
-      if (list.indexOf(value) < 0) await storage.engagement.set(key, [...list, value]);
+      if (list.indexOf(value) >= 0) return;
+      // Bounded: the plugin's storage is a megabyte, and a store that
+      // can't be written is a store that forgets — which would mean
+      // fetching the same files from the site all over again.
+      const kept = list.length >= maxRemembered ? list.slice(list.length - maxRemembered + 1) : list;
+      await storage.engagement.set(key, [...kept, value]);
     }
   } catch {
     // no engagement open; nothing to remember

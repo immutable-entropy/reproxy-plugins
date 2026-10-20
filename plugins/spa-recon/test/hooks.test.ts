@@ -104,6 +104,29 @@ describe("inspectHtml on an in-scope Vue/Vite app", () => {
     ]);
   });
 
+  it("and not again after a reload, because the engagement remembers", async () => {
+    mock.target("domain", "app.test");
+    reply("/\\.vite/manifest\\.json$", viteManifest);
+    reply("index-DPViepmO\\.js\\.map$", sourceMap);
+    await mock.dispatch("traffic.on_response_received", html("https://app.test/", nuxtHtml));
+    await idle();
+    const first = mock.sent().length;
+    expect(first).toBeGreaterThan(0);
+
+    // A reload clears the session's state; what the engagement remembers
+    // being fetched is what has to stop the site being asked again.
+    load();
+    setRequestGap(0);
+    await mock.dispatch("traffic.on_response_received", html("https://app.test/other", nuxtHtml));
+    await idle();
+    expect(mock.sent()).toHaveLength(first);
+
+    const fetched = (await storage.engagement.get<string[]>("fetched_maps"))!;
+    expect(fetched).toContain("https://app.test/assets/index-DPViepmO.js.map");
+    const probed = (await storage.engagement.get<Record<string, boolean>>("probed_origins"))!;
+    expect(probed["https://app.test"]).toBe(true);
+  });
+
   it("does nothing active when both fetching settings are off", async () => {
     mock.target("domain", "app.test");
     mock.settings({ fetch_source_maps: false, probe_vite_manifest: false });

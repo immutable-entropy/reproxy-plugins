@@ -1,6 +1,6 @@
 {
   "name": "spa-recon",
-  "version": "1.1",
+  "version": "1.2",
   "description": "Recognises single-page apps — Vue/Nuxt, React/Next.js, Svelte/SvelteKit and Angular — and the bundler build behind them, then, on in-scope hosts, fetches any exposed JavaScript source maps and Vite build manifest to recover the app's source-file structure, its framework and build versions, and the URLs it references. When a source map carries the original source, it un-webpacks it automatically: the application's source files are written to the engagement's recovered files, the exposed-map finding links to them, and each recovered file is mined for the URLs it calls. Each discovery is recorded as a finding, and discovered hosts and URLs are added to the Entity Explorer. A right-click action, \"Recover source from map\", does the same on demand. It sends requests to the target to fetch .map and manifest.json files (active), so it is disabled until you enable it.",
   "author": {
     "name": "reProxy"
@@ -15,6 +15,7 @@
   ],
   "targets": [
     { "hook": "plugin.on_load", "function": "load" },
+    { "hook": "engagement.on_opened", "function": "onEngagement" },
     {
       "hook": "traffic.on_response_received",
       "function": "inspectHtml",
