@@ -1,0 +1,128 @@
+{
+  "name": "laravel",
+  "version": "1.0",
+  "description": "Finds the mistakes a Laravel application gives away in its own traffic: debug mode left on (the Ignition or Whoops page and the JSON exception reply, with the stack traces, server environment and APP_KEY they print), the development tooling left reachable (Telescope, Horizon, Pulse, Debugbar, Clockwork, Ignition's routes, log viewers), the files a document root pointed at the project rather than public/ exposes (.env, composer.json, storage logs, vendor), and session cookies missing Secure, HttpOnly or SameSite. It reads traffic that has already passed and records what it finds as findings. An opt-in check, off by default, requests a short list of Laravel paths once per origin on in-scope hosts.",
+  "author": {
+    "name": "reProxy"
+  },
+  "status": "disabled",
+  "sdk": "1",
+  "finding_types": [
+    { "id": "laravel", "name": "Laravel", "color": "#ff2d20" },
+    { "id": "laravel-debug", "name": "Laravel Debug Mode", "color": "#c2185b" },
+    { "id": "laravel-exposure", "name": "Laravel Exposure", "color": "#e65100" },
+    { "id": "laravel-config", "name": "Laravel Configuration", "color": "#5e35b1" },
+    { "id": "laravel-secret", "name": "Laravel Secret", "color": "#b71c1c" }
+  ],
+  "targets": [
+    { "hook": "plugin.on_load", "function": "load" },
+    { "hook": "engagement.on_opened", "function": "onEngagement" },
+    {
+      "hook": "traffic.on_response_received",
+      "function": "onHeaders",
+      "match": { "scope": "in_scope" }
+    },
+    {
+      "hook": "traffic.on_response_received",
+      "function": "onBody",
+      "match": {
+        "scope": "in_scope",
+        "status": ["2xx"],
+        "content_types": ["text/html", "application/xhtml+xml"]
+      }
+    },
+    {
+      "hook": "traffic.on_response_received",
+      "function": "onBody",
+      "match": {
+        "scope": "in_scope",
+        "status": ["4xx", "5xx"],
+        "content_types": [
+          "text/html",
+          "application/xhtml+xml",
+          "application/json",
+          "application/*+json",
+          "text/plain"
+        ]
+      }
+    },
+    {
+      "hook": "traffic.on_response_received",
+      "function": "onExposedPath",
+      "match": {
+        "scope": "in_scope",
+        "status": ["2xx"],
+        "paths": [
+          "/.env",
+          "/.env.*",
+          "/*/.env",
+          "/storage/logs/*",
+          "/storage/app/*",
+          "/storage/framework/*",
+          "/telescope",
+          "/telescope/*",
+          "/horizon",
+          "/horizon/*",
+          "/pulse",
+          "/pulse/*",
+          "/_debugbar/*",
+          "/_ignition/*",
+          "/clockwork/*",
+          "/__clockwork/*",
+          "/log-viewer",
+          "/log-viewer/*",
+          "/composer.json",
+          "/composer.lock",
+          "/artisan",
+          "/vendor/autoload.php",
+          "/vendor/composer/*",
+          "/vendor/laravel/*"
+        ]
+      }
+    }
+  ],
+  "settings": [
+    {
+      "key": "check_cookies",
+      "type": "boolean",
+      "label": "Check the session cookies' attributes",
+      "description": "Report a Laravel session, remember-me or CSRF cookie that is missing Secure, HttpOnly or SameSite, or that is sent unencrypted. Each is one finding per cookie per host.",
+      "default": true
+    },
+    {
+      "key": "record_app_key",
+      "type": "boolean",
+      "label": "Record an APP_KEY the app prints",
+      "description": "An APP_KEY found in an error page or an exposed .env is recorded as a hidden finding, so it is masked on screen until you click the eye beside it. Off: the leak is still reported, but the key itself is not stored.",
+      "default": true
+    },
+    {
+      "key": "active_probe",
+      "type": "boolean",
+      "label": "Request a short list of Laravel paths",
+      "description": "Off: the plugin is entirely passive and reports only what the traffic already carried. On: when a host is shown to run Laravel, it requests the paths below once — this is active testing, it reaches the target, and it is kept to the hosts your targets cover. A host is asked once per engagement and never again: what was asked is written into the engagement, so reloading the plugin, restarting reProxy or browsing the site a second time sends nothing more. The requests are recorded in the Traffic list, and the result is noted on the origin in the Entity Explorer (laravel-checked).",
+      "default": false
+    },
+    {
+      "key": "probe_paths",
+      "type": "list",
+      "label": "Paths the active check requests",
+      "description": "Requested once per host, relative to its root, when the active check is on. Changing the list does not re-check a host that has already been checked in this engagement.",
+      "default": [
+        ".env",
+        "telescope",
+        "horizon",
+        "_ignition/health-check",
+        "storage/logs/laravel.log",
+        "composer.json"
+      ]
+    },
+    {
+      "key": "max_body_kb",
+      "type": "number",
+      "label": "Largest body read (KiB)",
+      "description": "A response bigger than this is left unread. Error pages with a full stack trace are large, but the whole body has to be searched, so the cap is what keeps the work inside a plugin's time budget.",
+      "default": 1024
+    }
+  ]
+}
