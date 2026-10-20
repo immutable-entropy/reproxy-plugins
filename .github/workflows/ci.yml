@@ -1,0 +1,114 @@
+# Unit tests for every plugin on each push, and a supply-chain audit of any
+# npm modules a plugin imports.
+#
+# The tests are the plugins' own *.test.ts suites, and the only thing that
+# runs them is the `reproxy` binary, which lives in the app repository
+# (immutable-entropy/reproxy). This workflow checks that repository out and
+# builds its Qt-free command line (make build-headless, added there for this
+# purpose), so no Qt toolchain is needed, then runs
+# `reproxy plugins validate` and `reproxy plugins test` over each plugin.
+#
+# Required secret:
+#   REPROXY_APP_TOKEN  a token that can read immutable-entropy/reproxy — a
+#                      fine-grained PAT with Contents: Read on that repo, or a
+#                      deploy key. The workflow's own GITHUB_TOKEN only reaches
+#                      THIS repository, so it cannot check the app repo out.
+#
+# Optional variable:
+#   REPROXY_APP_REF    the ref of the app repository to build the runner from
+#                      (default: main). The headless build must be present on
+#                      that ref.
+#
+# Actions are pinned to a release commit, as in the app repository's own CI.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+
+permissions:
+  contents: read
+
+# A newer push to the same branch supersedes a run still going.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Plugin tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the plugins
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out the app (for the test runner)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: immutable-entropy/reproxy
+          ref: ${{ vars.REPROXY_APP_REF || 'main' }}
+          token: ${{ secrets.REPROXY_APP_TOKEN }}
+          path: .reproxy-app
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .reproxy-app/go.mod
+          cache-dependency-path: .reproxy-app/go.sum
+
+      - name: Build the headless runner
+        working-directory: .reproxy-app
+        run: |
+          make build-headless
+          echo "REPROXY=$GITHUB_WORKSPACE/.reproxy-app/bin/reproxy" >> "$GITHUB_ENV"
+
+      - name: Validate and test every plugin
+        run: |
+          fail=0
+          for d in plugins/*/; do
+            echo "::group::$d"
+            "$REPROXY" plugins validate "$d" || fail=1
+            "$REPROXY" plugins test "$d" || fail=1
+            echo "::endgroup::"
+          done
+          exit $fail
+
+  dependencies:
+    name: npm supply-chain audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the plugins
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Plugins may not import npm packages (see CLAUDE.md), so normally there
+      # is nothing to audit and this step says so and stops. If a package.json
+      # ever appears, every one is audited and a known vulnerability fails the
+      # run — the check activates itself the moment a dependency is added.
+      - name: Audit npm dependencies if any exist
+        run: |
+          mapfile -t manifests < <(find . -path ./node_modules -prune -o -name package.json -print)
+          if [ ${#manifests[@]} -eq 0 ]; then
+            echo "No npm modules in this repository; nothing to audit."
+            exit 0
+          fi
+          echo "Found ${#manifests[@]} package.json file(s); auditing each."
+          fail=0
+          for m in "${manifests[@]}"; do
+            dir=$(dirname "$m")
+            echo "::group::npm audit in $dir"
+            if [ -f "$dir/package-lock.json" ]; then
+              ( cd "$dir" && npm ci --ignore-scripts ) || fail=1
+            else
+              ( cd "$dir" && npm install --ignore-scripts --package-lock-only ) || fail=1
+            fi
+            ( cd "$dir" && npm audit --audit-level=high ) || fail=1
+            echo "::endgroup::"
+          done
+          exit $fail

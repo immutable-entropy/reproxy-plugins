@@ -290,6 +290,22 @@ directory. TypeScript types are only stripped when a plugin loads, never
 checked, so this is how you get type errors in an editor. Don't commit
 those files (`.gitignore` covers them).
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push. It builds the Qt-free command
+line from the app repository (`make build-headless` there) and runs
+`reproxy plugins validate` and `reproxy plugins test` over every plugin, and
+it audits any npm modules a plugin imports — of which there are none, so that
+job detects their absence and stops; it activates itself if a `package.json`
+is ever added (which the "No outside code" rule means shouldn't happen).
+
+Running the tests needs the app repository, which is private, so CI needs one
+secret: `REPROXY_APP_TOKEN`, a token that can read `immutable-entropy/reproxy`
+(a fine-grained PAT with Contents: Read, or a deploy key). It builds the
+runner from that repository's `main` by default; set the `REPROXY_APP_REF`
+variable to build from another ref. The headless build must be present on
+whichever ref is used.
+
 To try a plugin in the running app, copy (or symlink) its directory into
 `~/.reproxy/plugins/` and open the Plugins window. It looks for plugins
 again each time that section is shown, and **Reload** picks up edits. The
