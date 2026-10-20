@@ -19,7 +19,7 @@
 // the core version is reported as unknown rather than as the plugin's; see
 // src/fingerprint.ts.
 
-import { findings, flows, http, log, settings, type Flow, type Hooks, type Location, type Url } from "reproxy";
+import { findings, flows, http, log, settings, storage, type Flow, type Hooks, type Location, type Url } from "reproxy";
 import { pluginProbes, probePath, themeProbes, type Probe } from "./src/active";
 import { fromHeaders, fromPath, looksWordPress, read, versionOf, type Fact } from "./src/fingerprint";
 import { readRest, routeOf } from "./src/rest";
@@ -44,6 +44,22 @@ const maxPages = 3;
 /** Responses bigger than this are left alone. */
 const maxBody = 4 * 1024 * 1024;
 
+/**
+ * What the engagement remembers about the parts the site has already been
+ * asked for: "plugin:blog.test:akismet" → the version the probe read, or
+ * "" when the files it tried said nothing. Reading what the traffic
+ * carried costs nothing and is done again on every run, but a request is
+ * sent at somebody's site, so it is sent once per part per engagement and
+ * never again — through a reload, a restart, or a second visit to the
+ * site. An answer of "" counts: a part whose readme.txt isn't there will
+ * not have one next week either.
+ */
+const askedKey = "wordpress_asked_parts";
+let asked: Record<string, string> | undefined;
+
+/** At most this many parts are remembered; the oldest are dropped. */
+const maxAsked = 2000;
+
 // Session state. Findings merge on their value, so nothing is lost by
 // forgetting this between runs; it only keeps the plugin from doing the same
 // work twice while it runs.
@@ -63,15 +79,29 @@ const maxActiveProbes = 100;
 const probeTimeoutMs = 10000;
 
 export function init({ reason }: Hooks["plugin.on_load"]): void {
+  reset();
+  log.debug(`watching the Explorer for WordPress sites (${reason})`);
+}
+
+/**
+ * onEngagement starts again when another engagement is opened: which
+ * parts have been asked for belongs to the engagement they were asked in.
+ */
+export function onEngagement(_e?: Hooks["engagement.on_opened"]): void {
+  reset();
+  log.debug("another engagement was opened: what was asked for is read again from it");
+}
+
+function reset(): void {
   reported.clear();
   scanned.clear();
   wpSites.clear();
   probed.clear();
+  asked = undefined;
   activeProbes = 0;
   warned = false;
   for (const k of Object.keys(coreVersions)) delete coreVersions[k];
   for (const k of Object.keys(versions)) delete versions[k];
-  log.debug(`watching the Explorer for WordPress sites (${reason})`);
 }
 
 export async function onUrl({ entity: url }: Hooks["url.on_created"]): Promise<void> {
@@ -146,6 +176,15 @@ async function acquireVersions(url: Url, facts: Sighting[]): Promise<void> {
     if (s.host !== url.host) continue;
     if (!wpSites.has(s.host)) continue;
     if (perEvent >= maxProbesPerEvent || activeProbes >= maxActiveProbes) break;
+    // Asked for in this engagement already: what it answered then is the
+    // answer now, so nothing is sent. A version it did find is kept, so
+    // the passive side doesn't report the part as version-less either.
+    const before = await askedBefore(key);
+    if (before !== undefined) {
+      probed.add(key);
+      if (before) versions[key] = before;
+      continue;
+    }
     probed.add(key);
     perEvent++;
     await probe(url.scheme, s);
@@ -155,6 +194,11 @@ async function acquireVersions(url: Url, facts: Sighting[]): Promise<void> {
 /** probe tries each file for a part until one states a version. */
 async function probe(scheme: string, s: Sighting): Promise<void> {
   const f = s.fact;
+  const key = `${f.kind}:${s.host}:${f.name}`;
+  // Written before the first request goes out, not after the last: a scan
+  // cut short by a reload still counts as asked, which is the safer way
+  // round for requests sent at somebody else's site.
+  await rememberAsked(key, "");
   const probes: Probe[] =
     f.kind === "theme" ? themeProbes(scheme, s.host, f.name) : pluginProbes(scheme, s.host, f.name);
   for (const p of probes) {
@@ -173,7 +217,8 @@ async function probe(scheme: string, s: Sighting): Promise<void> {
     if (!res.ok || res.isBinary()) continue;
     const version = p.read(res.text());
     if (!version) continue;
-    versions[`${f.kind}:${s.host}:${f.name}`] = version;
+    versions[key] = version;
+    await rememberAsked(key, version);
     await recordActiveVersion(s, version, p.url, res.flowId);
     return; // one version is enough
   }
@@ -417,6 +462,39 @@ async function recordPart(s: Sighting): Promise<void> {
 
 function siteValue(host: string): string {
   return `WordPress (${host})`;
+}
+
+/**
+ * askedBefore says what the engagement remembers about a part: the version
+ * a probe read, "" when it read none, or undefined when the part has never
+ * been asked for (or no engagement is open, when nothing can be
+ * remembered and the scan's own caps are what bound it).
+ */
+async function askedBefore(key: string): Promise<string | undefined> {
+  if (!asked) {
+    try {
+      asked = (await storage.engagement.get<Record<string, string>>(askedKey)) || {};
+    } catch {
+      return undefined;
+    }
+  }
+  return asked[key];
+}
+
+/** rememberAsked writes a part's answer back to the engagement. */
+async function rememberAsked(key: string, version: string): Promise<void> {
+  await askedBefore(key); // reads the record in, if it hasn't been read yet
+  if (!asked) return; // no engagement open: there is nowhere to remember it
+  asked[key] = version;
+  const keys = Object.keys(asked);
+  if (keys.length > maxAsked) {
+    for (const k of keys.slice(0, keys.length - maxAsked)) delete asked[k];
+  }
+  try {
+    await storage.engagement.set(askedKey, asked);
+  } catch (e) {
+    log.debug(`couldn't write down what was asked for: ${e}`);
+  }
 }
 
 /** record keeps a finding once per session, and survives having nowhere to put it. */
