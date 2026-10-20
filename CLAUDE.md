@@ -53,7 +53,7 @@ new one:
 
 | Plugin | Shows how to |
 |---|---|
-| `wordpress` | watch the **Entity Explorer** (`url.*` hooks) instead of traffic, read the flows behind a URL, keep per-run state that `plugin.on_load` resets, and record findings that merge |
+| `wordpress` | watch the **Entity Explorer** (`url.*` hooks) instead of traffic, read the flows behind a URL, keep per-run state that `plugin.on_load` resets, record findings that merge, and keep an opt-in active scan to one request per part per engagement by writing what was asked — and what it answered, including nothing — to `storage.engagement` |
 | `sensitive-info` | scan a message's headers, query string and body (and WebSocket messages) with `text.scan` (RE2 in Go), keep a big body affordable by gating patterns behind a plain text search, record a secret `hidden`, use tight `content_types` filters, use list, number and boolean settings, and redact values |
 | `footprint` | pull the links out of a response in Go (`text.urls`) and classify each in TypeScript, read HTML structure by hand (is a link in the `<header>`/`<footer>`/`<nav>`, or `rel="me"`?) without a DOM, gate literal-anchored patterns behind `indexOf` to stay cheap, and record findings that identify rather than authenticate (never `hidden`); keep `test/cost.test.ts` to prove the cost holds |
 | `stack-disclosure` | act on response headers alone with plain string work (no `text.scan`, no body read), record a finding once per host (dedupe on value+host) so it gains one sighting per host rather than per response, and keep `plugin.on_load` to reset that per-run set |
@@ -61,6 +61,7 @@ new one:
 | `precon` | be driven from the command line rather than by traffic (`commands`, `reproxy precon <action>`, no traffic or entity hooks), with the lookup logic kept as plain functions under `src/` that the command handlers in `main.ts` call; merge two services' answers into one record and parse a binary format (a certificate's SANs) in TypeScript (`src/ssl`), and read a third-party API's reply defensively (`src/dns`) |
 | `js-libraries` | watch responses of one kind (`content_types`) on the targets and, with a `hosts` list and the Referer, the third-party hosts a target's pages load from; gate `text.scan` patterns behind `indexOf` needles; write notes that stay the same on every sighting so findings merge cleanly; look results up in an outside API once and keep the answers in `storage` with an expiry |
 | `spa-recon` | detect a framework (Vue/Nuxt, React/Next, Svelte/SvelteKit, Angular) and build from the HTML and the bundles it loads; send requests of the plugin's own (`http.send`, through the upstream chain, `record: true`) to fetch build artefacts only on in-scope hosts; parse a large JSON source map and a build manifest defensively; confirm a fact from a second source (the map) when the first (the HTML) is inconclusive; remember probed origins and fetched files in `storage.engagement` so active work is done once |
+| `laravel` | decide a host runs a given framework before saying anything about it (strong and weak evidence from `src/detect.ts`, accumulated across responses), read a framework's debug error page for the configuration and secrets it prints, confirm an exposed dev tool from what it served rather than from its path (a 200 on `/telescope` is as likely to be a single-page app's route), split the work over three targets — a head-only check on every response, a body read only where an error page could be, and a `paths` filter for the exposures — so each `match` stays tight, and keep `test/cost.test.ts` to prove the body read holds; keep active work to once per host for good by writing the record to `storage.engagement` before the requests go out and reading it back in place of re-detecting the host, with the result left on the entity's `kv` |
 
 ## Core or plugin?
 
@@ -141,6 +142,24 @@ every user's traffic, or gets stopped.
   sending behind a setting where it makes sense, and keep it to the hosts
   the targets cover (`targets.match(url)`). Plugins *can* reach any host, but
   testing off-target hosts is a decision for the user, not the plugin.
+- **Active work happens once.** A request a plugin sends by itself is sent
+  at somebody's server, so the same test must not be repeated every time
+  the tester reloads the plugin, restarts reProxy or walks through the site
+  again. A module-level `Set` only covers the run; what has been asked goes
+  in `storage.engagement`, keyed by whatever the test is *of* — the host
+  (`laravel`), the plugin or theme (`wordpress`), the origin or the file
+  (`spa-recon`) — and is consulted before anything is sent. Write the
+  record **before** the first request rather than after the last, so a
+  check cut short by a reload still counts as done; that is the safer way
+  round when the cost of being wrong is somebody else's server. Remember a
+  negative answer too (a readme.txt that isn't there will not be there
+  next week), bound what you keep so the megabyte of storage can't
+  overflow, and read it back instead of working the target out from
+  scratch. The record belongs to the engagement, so reset the in-memory
+  copy of it in both `plugin.on_load` and `engagement.on_opened`. A
+  lookup in a third-party database (`js-libraries` asking osv.dev) is a
+  different matter: cache it in `storage` with an expiry, since the answer
+  changes over time.
 - **Heavy text work goes to Go.** goja is many times slower than V8. Scan
   bodies with `text.scan` (RE2: no backreferences or lookaround, repeats up
   to 1000, linear time) and extract URLs with `text.urls`. Don't loop a JS
@@ -349,3 +368,7 @@ A quick reminder of what's there (the README has the details):
 - No test fixtures from real engagements: no real hosts, credentials or
   personal data. Use `*.test` hosts and obviously fake values.
 - Commit only when asked. Commit messages say what changed and why.
+- Keep AI out of the history. A commit message, a pull request or a code
+  comment describes the change, never the tools that wrote it: no
+  `Co-Authored-By` trailer for an assistant, no "generated with" line, no
+  mention of a model or an agent anywhere in the repository.
