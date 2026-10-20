@@ -68,13 +68,34 @@ jobs:
 
       - name: Validate and test every plugin
         run: |
+          echo "## Plugin tests" >> "$GITHUB_STEP_SUMMARY"
           fail=0
           for d in plugins/*/; do
-            echo "::group::$d"
-            "$REPROXY" plugins validate "$d" || fail=1
-            "$REPROXY" plugins test "$d" || fail=1
+            name=$(basename "$d")
+            echo "::group::$name"
+            # Validate the manifest; a problem becomes one annotation on the
+            # plugin.json, with the problems core reported.
+            if ! vout=$("$REPROXY" plugins validate "$d" 2>&1); then
+              echo "$vout"
+              probs=$(echo "$vout" | sed '1d; s/^[[:space:]]*//' | paste -sd '; ' -)
+              echo "::error file=${d}plugin.json,title=${name}: manifest invalid::${probs}"
+              echo "- **$name** manifest invalid: $probs" >> "$GITHUB_STEP_SUMMARY"
+              fail=1
+            fi
+            # Run the tests; each failure becomes one annotation on its test
+            # file (see .github/annotate-test-failures.awk). The full output
+            # still goes to the log.
+            if ! tout=$("$REPROXY" plugins test "$d" 2>&1); then
+              echo "$tout"
+              echo "$tout" | awk -v dir="$d" -v plugin="$name" -v summary="$GITHUB_STEP_SUMMARY" \
+                -f .github/annotate-test-failures.awk
+              fail=1
+            else
+              echo "$tout"
+            fi
             echo "::endgroup::"
           done
+          if [ "$fail" -eq 0 ]; then echo "All plugins passed." >> "$GITHUB_STEP_SUMMARY"; fi
           exit $fail
 
   dependencies:
