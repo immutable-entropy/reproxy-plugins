@@ -53,11 +53,35 @@ export interface Options {
   maxBody: number;
   /** The most of a body the patterns that can't be anchored are run over. */
   maxPii: number;
+  /** Report a token or session id in a header, which is the tester's own
+   *  (see OWN_SESSION). */
+  headerTokens: boolean;
   ignoreValues: string[];
   hexHashes: boolean;
   /** The most hits one message may yield. */
   maxHits: number;
 }
+
+/**
+ * Detectors whose hits, when they are in a header, only describe the
+ * session the tester is holding.
+ *
+ * This plugin runs beside a tester driving the application in a browser,
+ * not beside an attacker on the wire: every Cookie, Set-Cookie,
+ * Authorization and X-CSRF-Token that passes carries their own session,
+ * and reporting it buries the findings that matter. So in a header a
+ * value is only reported when something other than its field name shows
+ * it to be a secret — a provider's key format (AKIA…, sk_live_…), a
+ * password hash, a password or card number in clear, a Basic credential.
+ * A token, a session id or a key-shaped value under a credential-sounding
+ * header name is not: it is ours.
+ *
+ * The same value in a query string, a body or a recovered file is still
+ * reported, because there it is the application putting it somewhere it
+ * does not belong. The "header_session_tokens" setting turns the whole
+ * policy off for anyone reading traffic that isn't their own.
+ */
+const OWN_SESSION = ["field_token", "field_session", "field_api_key", "field_username", "jwt", "hex_hash"];
 
 /** Where in a message something was found. */
 export type Where = "header" | "query" | "body";
@@ -233,6 +257,7 @@ export function scan(input: Input, opts: Options): Hit[] {
     const cut = hit.value.indexOf("\u0000");
     if (cut >= 0) hit.value = hit.value.slice(0, cut).trim();
     if (!hit.value || !enabled(opts, hit.detector, hit.type) || ignored(hit.value, opts)) return;
+    if (hit.where === "header" && !opts.headerTokens && OWN_SESSION.indexOf(hit.detector) >= 0) return;
     if (seen[hit.value]) return;
     seen[hit.value] = true;
     // A user name is not what makes a message a login: only something it
@@ -357,53 +382,26 @@ function ignored(value: string, opts: Options): boolean {
   return false;
 }
 
-/** fromHeader reads an Authorization line: the scheme decides what the
- *  credential is, and Basic is decoded to the user and password it hides. */
+/**
+ * fromHeader reads an Authorization line. Only Basic reaches here (see
+ * HEADER_RULES), and it is decoded to the user and password it hides.
+ */
 function fromHeader(m: Found, rules: Record<string, Rule>): Pending | null {
-  const bare = m.id === "auth_header_bare";
-  const scheme = bare ? "" : (m.groups[0] ?? "").toLowerCase();
-  const value = (bare ? m.groups[0] : m.groups[1] ?? "").trim();
+  const value = (m.groups[0] ?? "").trim();
   if (!value) return null;
-  const base: Pending = {
+  const plain = decodeBase64(value);
+  if (!plain || plain.indexOf(":") <= 0) return null;
+  return {
     detector: m.id,
     label: rules[m.id].label,
-    type: "token",
-    value,
+    type: "credential",
+    value: plain,
     key: "Authorization",
     where: "header",
     secret: true,
+    fields: { user: plain.slice(0, plain.indexOf(":")) },
+    note: "Basic authentication is the password itself, base64 encoded, on every request.",
   };
-  switch (scheme) {
-    case "basic": {
-      const plain = decodeBase64(value);
-      if (plain && plain.indexOf(":") > 0) {
-        return {
-          ...base,
-          label: "HTTP Basic credentials",
-          type: "credential",
-          value: plain,
-          fields: { user: plain.slice(0, plain.indexOf(":")) },
-          note: "Basic authentication is the password itself, base64 encoded, on every request.",
-        };
-      }
-      return base;
-    }
-    case "digest":
-      return { ...base, label: "HTTP Digest credentials", type: "credential" };
-    case "ntlm":
-    case "negotiate":
-      return { ...base, label: "NTLM or Negotiate credential", type: "credential" };
-    default: {
-      const label = scheme ? `${scheme.charAt(0).toUpperCase()}${scheme.slice(1)} authorization credential` : base.label;
-      const hit: Pending = { ...base, label };
-      const claims = value.split(".").length === 3 ? decodeClaims(value) : null;
-      if (claims) {
-        hit.fields = claims;
-        hit.note = "Anyone holding the token can act as whoever it was issued to until it expires.";
-      }
-      return hit;
-    }
-  }
 }
 
 /** fromFormat turns a match of a shape-based rule into a hit, checking what

@@ -1,7 +1,7 @@
 {
   "name": "sensitive-info",
-  "version": "1.3",
-  "description": "Scans requests, responses and WebSocket messages for credentials, keys, tokens, password hashes and highly sensitive personal data — payment cards, bank and government identifiers, dates of birth — in headers, query strings and bodies. Each is recorded as a finding linked to the request it was seen in. It only reads traffic: nothing is held, changed or sent. Contact details and the external footprint are the companion \"footprint\" plugin's; stack-disclosure headers are the \"stack-disclosure\" plugin's.",
+  "version": "1.4",
+  "description": "Scans requests, responses, WebSocket messages and the files the work recovers for credentials, keys, tokens, password hashes and highly sensitive personal data — payment cards, bank and government identifiers, dates of birth — in headers, query strings, bodies and recovered source. Each is recorded as a finding linked to where it was seen. Because it runs beside a tester driving the application, a token or session identifier in a header is taken to be that tester's own session and is not reported; what a format proves to be a secret is reported wherever it appears. It only reads traffic: nothing is held, changed or sent. Contact details and the external footprint are the companion \"footprint\" plugin's; stack-disclosure headers are the \"stack-disclosure\" plugin's.",
   "author": {
     "name": "Kayleigh",
     "email": null
@@ -52,6 +52,30 @@
       }
     },
     {
+      "hook": "file.on_created",
+      "function": "scanFile",
+      "match": {
+        "content_types": [
+          "text/*",
+          "application/json",
+          "application/*+json",
+          "application/javascript",
+          "application/x-javascript",
+          "application/ecmascript",
+          "application/xml",
+          "application/*+xml",
+          "application/yaml",
+          "application/x-yaml",
+          "application/x-sh",
+          "application/sql"
+        ]
+      }
+    },
+    {
+      "hook": "file.on_batch_complete",
+      "function": "scanBatch"
+    },
+    {
       "hook": "websocket.on_message",
       "function": "scanWebSocket",
       "match": { "scope": "in_scope" }
@@ -85,6 +109,20 @@
       "label": "Minimum entropy for generic keys",
       "description": "A value under a key-like name (api_key, token) is only flagged when it is at least this random (bits per character). Formats that name their issuer, such as an AWS or Stripe key, are reported whatever their entropy.",
       "default": 3.5
+    },
+    {
+      "key": "scan_files",
+      "type": "boolean",
+      "label": "Scan the files the work recovers",
+      "description": "The application's own source, recovered from an exposed source map or taken out of a bundle by another plugin, is read for the same secrets as a response body. A key embedded in a file the application ships is in every copy of it, so these are the findings least open to doubt. Off: only live traffic is scanned.",
+      "default": true
+    },
+    {
+      "key": "header_session_tokens",
+      "type": "boolean",
+      "label": "Report tokens and session identifiers in headers",
+      "description": "Off (the default): a token, session identifier or key-shaped value in a header — Cookie, Set-Cookie, Authorization, X-CSRF-Token — is taken to be the session you are holding while you test the application, and is not reported. What a format proves to be a secret is still reported wherever it is: a provider's key, a password hash, a password or card number in clear, an HTTP Basic credential. On: every token in a header is a finding again, for reading traffic that is not your own.",
+      "default": false
     },
     {
       "key": "hex_hashes",
