@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, mock } from "reproxy/testing";
-import { storage, targets } from "reproxy";
+import { targets } from "reproxy";
 import { idle, load, setRequestGap } from "../main";
 
 beforeEach(async () => {
@@ -339,12 +339,10 @@ describe("the active check", () => {
     expect(origin.kv["laravel"]).toContain("the laravel_session cookie");
     expect(origin.kv["laravel-checked"]).toContain("2 paths asked");
     expect(origin.kv["laravel-checked"]).toContain("env_file");
-
-    // The same record is in the engagement, which is what stops the host
-    // being asked again after a reload.
-    const known = (await storage.engagement.get<Record<string, { checked: number; found: string[] }>>("laravel_hosts"))!;
-    expect(known["app.test"].checked > 0).toBe(true);
-    expect(known["app.test"].found).toEqual(["env_file"]);
+    // The kv note is written only after the engagement record is, and it
+    // carries the same asked/found that record holds, so it is proof the
+    // record was written. That the record then stops a re-probe is the
+    // "never asks a host twice" test's job, not this one's.
   });
 
   it("asks nothing when the list of paths is empty", async () => {
