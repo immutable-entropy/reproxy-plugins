@@ -1,6 +1,6 @@
 {
   "name": "laravel",
-  "version": "1.0",
+  "version": "1.0-2",
   "description": "Finds the mistakes a Laravel application gives away in its own traffic: debug mode left on (the Ignition or Whoops page and the JSON exception reply, with the stack traces, server environment and APP_KEY they print), the development tooling left reachable (Telescope, Horizon, Pulse, Debugbar, Clockwork, Ignition's routes, log viewers), the files a document root pointed at the project rather than public/ exposes (.env, composer.json, storage logs, vendor), and session cookies missing Secure, HttpOnly or SameSite. It reads traffic that has already passed and records what it finds as findings. An opt-in check, off by default, requests a short list of Laravel paths once per origin on in-scope hosts.",
   "author": {
     "name": "reProxy"

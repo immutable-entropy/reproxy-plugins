@@ -99,6 +99,16 @@ const knownKey = "laravel_hosts";
 
 /** The engagement's record, read once and written back as it changes. */
 let known: Record<string, Known> | undefined;
+// The read that fills `known`, kept while it is in flight. A single
+// response runs two targets at once (a head check and a body check), so two
+// hooks can call loadKnown before either has finished reading; sharing the
+// one read saves the second a round trip. Writes don't rely on this —
+// mutate reads the stored map for itself — so a stale read here is only ever
+// an out-of-date hint, never a lost write.
+let loading: Promise<Record<string, Known> | undefined> | undefined;
+// Serialises every write to the record (see mutate), so two writes that
+// land together read and write the stored map in turn rather than at once.
+let writeChain: Promise<unknown> = Promise.resolve();
 
 /** At most this many hosts are remembered; the oldest are dropped. */
 const maxKnown = 500;
@@ -122,6 +132,7 @@ export function load(_e?: Hooks["plugin.on_load"]): void {
   laravelHosts.clear();
   checkedHosts.clear();
   known = undefined;
+  loading = undefined;
   for (const k of Object.keys(weakSignals)) delete weakSignals[k];
   chain = Promise.resolve();
   warned = false;
@@ -264,7 +275,7 @@ async function note(where: At, signals: Signal[]): Promise<void> {
 
   laravelHosts.add(where.host);
   delete weakSignals[where.host];
-  await remember(where.host, { evidence: v.why, seen: Date.now(), checked: 0, origin: where.origin, asked: 0, found: [] });
+  await rememberSeen(where.host, v.why, where.origin);
   await mark(where.origin, "laravel", v.certain ? `yes — ${v.why}` : `probably — ${v.why}`);
   await record(`site:${where.host}`, {
     value: siteValue(where.host),
@@ -461,7 +472,7 @@ async function runCheck(where: At): Promise<void> {
     asked: paths.length,
     found: [],
   };
-  await remember(where.host, now);
+  await rememberChecked(where.host, now);
 
   log.info(`checking ${where.origin} for ${paths.length} Laravel misconfigurations (once per host)`);
   for (const raw of paths) {
@@ -471,7 +482,7 @@ async function runCheck(where: At): Promise<void> {
     }
   }
 
-  await remember(where.host, now);
+  await rememberChecked(where.host, now);
   await mark(where.origin, "laravel-checked", summarise(now));
   log.info(`checked ${where.origin}: ${summarise(now)}`);
 }
@@ -542,12 +553,18 @@ async function ask(origin: string, path: string): Promise<string[]> {
  */
 async function loadKnown(): Promise<Record<string, Known> | undefined> {
   if (known) return known;
-  try {
-    known = (await storage.engagement.get<Record<string, Known>>(knownKey)) || {};
-  } catch {
-    return undefined;
+  if (!loading) {
+    loading = (async () => {
+      try {
+        known = (await storage.engagement.get<Record<string, Known>>(knownKey)) || {};
+      } catch {
+        known = undefined;
+      }
+      loading = undefined;
+      return known;
+    })();
   }
-  return known;
+  return loading;
 }
 
 /** What the engagement remembers about a host, if anything. */
@@ -556,22 +573,67 @@ async function remembered(host: string): Promise<Known | undefined> {
   return map ? map[host] : undefined;
 }
 
-/** remember writes a host's record back to the engagement. */
-async function remember(host: string, record: Known): Promise<void> {
-  const map = await loadKnown();
-  if (!map) return;
-  map[host] = record;
-  const hosts = Object.keys(map);
-  if (hosts.length > maxKnown) {
-    // Oldest out: a long engagement should not fill the plugin's megabyte.
-    hosts.sort((a, b) => (map[a].seen || 0) - (map[b].seen || 0));
-    for (const host of hosts.slice(0, hosts.length - maxKnown)) delete map[host];
-  }
-  try {
-    await storage.engagement.set(knownKey, map);
-  } catch (e) {
-    log.debug(`couldn't write down what was checked: ${String(e)}`);
-  }
+/**
+ * mutate is the only way a host's record is written. Every write goes
+ * through one chain and reads the latest stored map for itself before
+ * changing it, so two writes that land together can't lose each other.
+ * That matters because a single response runs two targets at once (a head
+ * check and a body check) and both may recognise the host, while the active
+ * check writes to the same record from a third place; without this a slow
+ * write could land last and overwrite a check that had already run, and the
+ * host would be asked again on the next run. The map is trimmed here so a
+ * long engagement can't fill the plugin's megabyte.
+ */
+function mutate(change: (map: Record<string, Known>) => void): Promise<void> {
+  const next = writeChain.then(async () => {
+    let map: Record<string, Known>;
+    try {
+      map = (await storage.engagement.get<Record<string, Known>>(knownKey)) || {};
+    } catch {
+      return; // no engagement open: nothing to write
+    }
+    change(map);
+    const hosts = Object.keys(map);
+    if (hosts.length > maxKnown) {
+      // Oldest out, by when the host was first seen.
+      hosts.sort((a, b) => (map[a].seen || 0) - (map[b].seen || 0));
+      for (const h of hosts.slice(0, hosts.length - maxKnown)) delete map[h];
+    }
+    try {
+      await storage.engagement.set(knownKey, map);
+      known = map; // keep the read cache in step with what was just written
+    } catch (e) {
+      log.debug(`couldn't write down what was checked: ${String(e)}`);
+    }
+  });
+  // The chain must not break on one failed write, so swallow errors on the
+  // link that the next write builds on; callers still see this write's own.
+  writeChain = next.catch(() => {});
+  return next;
+}
+
+/**
+ * rememberSeen records that a host runs Laravel, if it isn't recorded
+ * already. It never touches a record that the active check has written: a
+ * recognition that lands after the check must not undo it.
+ */
+function rememberSeen(host: string, evidence: string, origin: string): Promise<void> {
+  return mutate((map) => {
+    const prev = map[host];
+    if (prev) {
+      if (!prev.evidence) prev.evidence = evidence;
+      if (!prev.origin) prev.origin = origin;
+      return;
+    }
+    map[host] = { evidence, seen: Date.now(), checked: 0, origin, asked: 0, found: [] };
+  });
+}
+
+/** rememberChecked records the outcome of the active check for a host. */
+function rememberChecked(host: string, record: Known): Promise<void> {
+  return mutate((map) => {
+    map[host] = record;
+  });
 }
 
 /**
