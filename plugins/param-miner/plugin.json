@@ -1,0 +1,80 @@
+{
+  "name": "param-miner",
+  "version": "1.0",
+  "description": "Discovers hidden request parameters and unkeyed inputs on one request you pick: common query, body and cookie parameter names, and the proxy, routing and caching headers that matter behind a CDN or load balancer (the inputs that change a response without being part of its cache key). A right-click action only — it never runs on its own. It guesses names against the request you chose, judges each by whether its value reflects or the response changes from a baseline, bisects a reacting batch to the name responsible, and confirms every candidate on its own before recording it, so an unconfirmed guess is never reported. Active and can be noisy; every probe carries a cache-buster so it never shares a cache key with a real user, and the plugin discovers unkeyed inputs rather than attempting cache poisoning.",
+  "author": {
+    "name": "reProxy"
+  },
+  "status": "disabled",
+  "sdk": "1",
+  "finding_types": [
+    { "id": "hidden-param", "name": "Hidden Parameter", "color": "#8e24aa" }
+  ],
+  "actions": [
+    {
+      "id": "mine",
+      "label": "Param Miner",
+      "description": "Guess hidden query parameters and request headers for this request, and record each one the server accepts as a finding. Sends many requests to this host (active); every probe carries a cache-buster so nothing is cached on others' behalf.",
+      "function": "mine",
+      "match": { "scope": "any" }
+    }
+  ],
+  "settings": [
+    {
+      "key": "locations",
+      "type": "list",
+      "label": "Where to mine",
+      "description": "Which parts of the request to guess names in: query, header, body, cookie. The default is query and header — header is where the CDN/load-balancer unkeyed inputs live. Body is only mined when the request has a form or JSON body.",
+      "default": ["query", "header"]
+    },
+    {
+      "key": "wordlist",
+      "type": "list",
+      "label": "Extra names to guess",
+      "description": "Names added to the bundled list (parameter names for query/body/cookie, header names for header). Use it to add names particular to your target.",
+      "default": []
+    },
+    {
+      "key": "max_requests",
+      "type": "number",
+      "label": "Most requests to send",
+      "description": "A hard cap on the probes one run sends, across every location, including baseline, bisection and confirmation. The run stops when it is reached.",
+      "default": 300
+    },
+    {
+      "key": "batch_size",
+      "type": "number",
+      "label": "Names per request",
+      "description": "How many names are guessed in one probe. Larger is faster but makes a reacting batch costlier to bisect; smaller is gentler.",
+      "default": 24
+    },
+    {
+      "key": "pace_ms",
+      "type": "number",
+      "label": "Pause between requests (ms)",
+      "description": "A pause before each probe, so a run doesn't burst at the target or its CDN.",
+      "default": 120
+    },
+    {
+      "key": "max_findings",
+      "type": "number",
+      "label": "Most parameters to report",
+      "description": "The run stops recording once this many parameters are confirmed.",
+      "default": 50
+    },
+    {
+      "key": "baseline_samples",
+      "type": "number",
+      "label": "Baseline samples",
+      "description": "How many times the unmodified request is sent first, to learn the response's normal status and length before a guess is judged against it.",
+      "default": 3
+    },
+    {
+      "key": "max_scan_kb",
+      "type": "number",
+      "label": "Largest response scanned for reflection (KiB)",
+      "description": "Only this much of each response body is searched for a reflected canary value. The body length, used to spot a response that changed, is measured in full.",
+      "default": 1024
+    }
+  ]
+}

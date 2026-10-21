@@ -399,18 +399,17 @@ export const PII_RULES: Rule[] = [
 export const HEADER_RULES: Rule[] = [
   {
     id: "auth_header",
-    label: "Authorization credential",
-    type: "token",
-    // the scheme, then the credential: "Authorization: Basic dXNlcjpwYXNz".
-    pattern: `(?im)^(?:proxy-)?authorization:[ \\t]*([A-Za-z][A-Za-z0-9._~+/-]{1,24})[ \\t]+([^\\r\\n]{4,})`,
-    anchors: ["authorization:"],
-  },
-  {
-    id: "auth_header_bare",
-    label: "Authorization credential",
-    type: "token",
-    // Some APIs send the credential with no scheme at all.
-    pattern: `(?im)^(?:proxy-)?authorization:[ \\t]*([A-Za-z0-9._~+/=-]{16,})[ \\t]*$`,
+    label: "HTTP Basic credentials",
+    type: "credential",
+    // Basic only. The tester is the client here, so a Bearer or opaque
+    // credential in this header is the session they are holding — their
+    // own — and a Digest, NTLM or Negotiate one changes with every nonce,
+    // which would be a new finding on every request. Basic is neither: it
+    // is the password itself, base64 encoded, the same on each request,
+    // and it is worth knowing that an application asks for it. A
+    // provider's key sent as a Bearer token is still reported, by the
+    // format rules, which run over the headers as well.
+    pattern: `(?im)^(?:proxy-)?authorization:[ \\t]*basic[ \\t]+([A-Za-z0-9+/=]{8,})`,
     anchors: ["authorization:"],
   },
 ];

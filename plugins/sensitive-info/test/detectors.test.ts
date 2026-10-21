@@ -9,6 +9,7 @@ const base: Options = {
   maxPii: 1 << 20,
   ignoreValues: [],
   hexHashes: false,
+  headerTokens: false,
   maxHits: 100,
 };
 
@@ -138,7 +139,9 @@ describe("keys and tokens", () => {
   it("finds a JWT wherever it is", () => {
     const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMiLCJyb2xlIjoiYWRtaW4ifQ.c2lnbmF0dXJl";
     expect(body(`{"token":"${jwt}"}`)).toContain("jwt=" + jwt);
-    expect(found({ head: "GET / HTTP/1.1\r\nCookie: auth=" + jwt })).toContain("jwt=" + jwt);
+    expect(found({ query: "id_token=" + jwt })).toContain("jwt=" + jwt);
+    // Except in a header, where it is the tester's own session.
+    expect(found({ head: "GET / HTTP/1.1\r\nCookie: auth=" + jwt })).toEqual([]);
   });
 
   it("finds a private key, however it is wrapped", () => {
@@ -158,39 +161,66 @@ describe("keys and tokens", () => {
     expect(body("api_key=Zx9Qm2Lw7Vb4Np8Kr3Ty")).toEqual(["field_api_key=Zx9Qm2Lw7Vb4Np8Kr3Ty"]);
   });
 
-  it("finds a session cookie and an API key header", () => {
+  it("leaves the session the tester is holding alone", () => {
     const head = [
       "GET /app HTTP/1.1",
       "Cookie: theme=dark; PHPSESSID=8f2kq9d1x7bqw3zt5r6y; csrftoken=Zx9Qm2Lw7Vb4Np8Kr3Ty",
       "X-Api-Key: 4f8b2c9e1d7a6b3f5e0c",
+      "X-Csrf-Token: Zx9Qm2Lw7Vb4Np8Kr3Ty",
+      "Authorization: Bearer 9f8e7d6c5b4a3210ffff",
+      "",
+      "",
+    ].join("\r\n");
+    expect(found({ head })).toEqual([]);
+  });
+
+  it("reports the same headers when the policy is turned off", () => {
+    const head = "GET /app HTTP/1.1\r\nCookie: PHPSESSID=8f2kq9d1x7bqw3zt5r6y\r\n\r\n";
+    expect(found({ head }, { headerTokens: true })).toContain("field_session=8f2kq9d1x7bqw3zt5r6y");
+  });
+
+  it("still reports what a format proves to be a secret, wherever it is", () => {
+    const head = [
+      "GET /app HTTP/1.1",
+      "Cookie: sess=abc; deploy_key=AKIAIOSFODNN7EXAMPLE",
+      "Authorization: Bearer sk_live_4eC39HqLyjWDarjtT1zdp7dc",
+      "",
+      "",
     ].join("\r\n");
     const got = found({ head });
-    expect(got).toContain("field_session=8f2kq9d1x7bqw3zt5r6y");
-    expect(got).toContain("field_api_key=4f8b2c9e1d7a6b3f5e0c");
+    expect(got).toContain("aws_access_key=AKIAIOSFODNN7EXAMPLE");
+    expect(got).toContain("stripe_key=sk_live_4eC39HqLyjWDarjtT1zdp7dc");
+  });
+
+  it("still reports a password, a hash or a card in a header", () => {
+    const head = [
+      "HTTP/1.1 200 OK",
+      "Set-Cookie: remember=$2y$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy; Path=/",
+      "Set-Cookie: pwd=hunter2plus; Path=/",
+      "X-Card: 4111111111111111",
+      "",
+      "",
+    ].join("\r\n");
+    const got = found({ side: "response", head });
+    expect(got).toContain("bcrypt_hash=$2y$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy");
+    expect(got).toContain("field_password=hunter2plus");
+    expect(got).toContain("credit_card=4111111111111111");
   });
 });
 
 describe("authorization headers", () => {
   it("decodes Basic credentials", () => {
-    expect(found({ head: "GET / HTTP/1.1\r\nAuthorization: Basic " + btoa("admin:letmein") })).toEqual([
-      "auth_header=admin:letmein",
-    ]);
+    const head = "GET / HTTP/1.1\r\nAuthorization: Basic " + btoa("admin:letmein") + "\r\nAccept: */*\r\n\r\n";
+    expect(found({ head })).toEqual(["auth_header=admin:letmein"]);
   });
 
-  it("reads any scheme", () => {
-    expect(found({ head: "GET / HTTP/1.1\r\nauthorization: bearer abc123def456ghi" })).toEqual(["auth_header=abc123def456ghi"]);
-    expect(found({ head: "GET / HTTP/1.1\r\nAuthorization: Token 9f8e7d6c5b4a3210ffff" })).toEqual([
-      "auth_header=9f8e7d6c5b4a3210ffff",
-    ]);
-    expect(found({ head: "POST / HTTP/1.1\r\nProxy-Authorization: NTLM TlRMTVNTUAABAAAAB4IIAAAAAAAAAAAA" })).toEqual([
-      "auth_header=TlRMTVNTUAABAAAAB4IIAAAAAAAAAAAA",
-    ]);
-  });
-
-  it("reads a credential sent with no scheme at all", () => {
-    expect(found({ head: "GET / HTTP/1.1\r\nAuthorization: 8f2kq9d1x7bqw3zt5r6y" })).toEqual([
-      "auth_header_bare=8f2kq9d1x7bqw3zt5r6y",
-    ]);
+  it("says nothing about a bearer or an opaque credential, which is the tester's own", () => {
+    expect(found({ head: "GET / HTTP/1.1\r\nauthorization: bearer abc123def456ghi\r\n\r\n" })).toEqual([]);
+    expect(found({ head: "GET / HTTP/1.1\r\nAuthorization: Token 9f8e7d6c5b4a3210ffff\r\n\r\n" })).toEqual([]);
+    expect(found({ head: "GET / HTTP/1.1\r\nAuthorization: 8f2kq9d1x7bqw3zt5r6y\r\n\r\n" })).toEqual([]);
+    // Digest, NTLM and Negotiate change with every nonce: one finding per
+    // request, and never anything the tester did not already have.
+    expect(found({ head: "POST / HTTP/1.1\r\nProxy-Authorization: NTLM TlRMTVNTUAABAAAAB4IIAAAAAAAAAAAA\r\n\r\n" })).toEqual([]);
   });
 
   it("finds the AWS key in a SigV4 signature", () => {

@@ -196,8 +196,11 @@ describe("onUrl", () => {
 
 describe("the hooks it is on", () => {
   it("is called for every URL put in the Explorer", async () => {
+    // A flow that was answered: core maps a URL from the request that
+    // reached something, not from one nothing answered, so a fixture
+    // without a response never gets as far as the Explorer.
     expect(
-      await mock.dispatch("url.on_created", { url: "https://shop.test/products/12" }),
+      await mock.dispatch("url.on_created", { url: "https://shop.test/products/12", status: 200 }),
     ).toBe(1);
   });
 
@@ -312,4 +315,42 @@ describe("active version scanning", () => {
     await mock.dispatch("url.on_updated", ep);
     expect(mock.sent().filter((r) => r.url.indexOf("contact-form-7") >= 0)).toHaveLength(1);
   });
+
+  it("and only once across a reload, because the engagement remembers", async () => {
+    mock.settings({ active_version_scan: true });
+    mock.respond("/contact-form-7/readme\\.txt", { status: 200, body: "Stable tag: 5.9.2\n" });
+    const ep = {
+      url: "https://blog.test/",
+      responseHeaders: { "Content-Type": "text/html" },
+      responseBody: cfPage,
+    };
+    await mock.dispatch("url.on_created", ep);
+    expect(mock.sent()).toHaveLength(1);
+
+    // A reload clears the session's state; what the engagement remembers
+    // being asked is what has to stop the site being asked again.
+    init({ hook: "plugin.on_load", reason: "reload", settings: {} });
+    await mock.dispatch("url.on_created", ep);
+    expect(mock.sent()).toHaveLength(1);
+    // The version it learned the first time is still known, so the part is
+    // not reported as one whose version was never stated.
+    expect(byValue("contact-form-7 (blog.test)")?.notes).toContain("version 5.9.2");
+  });
+
+  it("does not ask again for a part whose files said nothing", async () => {
+    mock.settings({ active_version_scan: true });
+    const ep = {
+      url: "https://blog.test/",
+      responseHeaders: { "Content-Type": "text/html" },
+      responseBody: cfPage,
+    };
+    // No mock.respond rule: the harness answers 404, and that is an answer.
+    await mock.dispatch("url.on_created", ep);
+    expect(mock.sent()).toHaveLength(1);
+
+    init({ hook: "plugin.on_load", reason: "reload", settings: {} });
+    await mock.dispatch("url.on_created", ep);
+    expect(mock.sent()).toHaveLength(1);
+  });
+
 });

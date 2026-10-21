@@ -9,6 +9,22 @@
 // its body. Replayed and agent traffic comes through the same hooks, so
 // what the tester replays is scanned too.
 //
+// The files the work recovered are read as well (file.on_created, and
+// file.on_batch_complete for a recovery too large for the queue). A secret
+// embedded in the source another plugin un-webpacked out of an exposed map
+// is in every copy of the application anyone downloads, which makes it the
+// least arguable finding this plugin makes — and reading it needs no code
+// beyond what a response body already needs.
+//
+// What this plugin does not report is the tester's own session. It runs
+// beside somebody driving the application in a browser, not beside an
+// attacker on the wire, so the Cookie, Set-Cookie, Authorization and
+// X-CSRF-Token headers that pass carry credentials they already have. A
+// token or session identifier in a header is therefore left alone, while
+// what a format proves to be a secret — a provider's key, a password hash,
+// a password or card number in clear, an HTTP Basic credential — is still
+// reported wherever it turns up (see OWN_SESSION in src/detectors.ts).
+//
 // Every hit becomes a finding whose value is the secret itself, linked to
 // the request it was seen in and to where in it the secret was; the same
 // secret seen again just gains a sighting. A value that is a secret in
@@ -24,13 +40,17 @@
 // now belong to the "footprint" plugin, and what response headers give away
 // about the stack to the "stack-disclosure" plugin.
 
-import { findings, log, settings, type Flow, type Hooks, type Location, type Message } from "reproxy";
+import { files, findings, log, settings, type Flow, type Hooks, type Location, type Message, type RecoveredFile } from "reproxy";
 import { reset, scan, type Hit, type Input, type Options, type Where } from "./src/detectors";
 import { redact } from "./src/redact";
+
+/** The recovered files already read this run, so neither hook reads one twice. */
+const scanned = new Set<number>();
 
 /** Module state is per run, so it is cleared when the plugin loads. */
 export function load(): void {
   reset();
+  scanned.clear();
 }
 
 export async function scanRequest({ flow }: Hooks["traffic.on_request_forwarded"]): Promise<void> {
@@ -47,6 +67,86 @@ export async function scanWebSocket({ flow, message }: Hooks["websocket.on_messa
   const side = message.direction === "sent" ? "request" : "response";
   const text = message.size <= options().maxBody ? message.text() : "";
   await record(flow, side, { side, body: text }, `WebSocket message ${message.seq}`);
+}
+
+/**
+ * scanFile reads a file the work recovered — the original source a plugin
+ * un-webpacked out of a source map, a configuration file, anything else
+ * put under the engagement. A secret in one of those is the application's
+ * own, embedded in what it ships, rather than something passing through,
+ * so it is the most objective finding this plugin makes.
+ */
+export async function scanFile({ file }: Hooks["file.on_created"]): Promise<void> {
+  await readFile(file);
+}
+
+/**
+ * scanBatch takes a whole recovery. Un-webpacking a build can write
+ * thousands of files at once, far more than a plugin's queue holds, so the
+ * batch is the event to work from: every file in it is read here, at this
+ * plugin's own pace.
+ */
+export async function scanBatch({ batch }: Hooks["file.on_batch_complete"]): Promise<void> {
+  if (settings.get<boolean>("scan_files") === false) return;
+  const found = files.list({ batch: batch.id, textOnly: true, limit: 1000 });
+  log.info(`reading ${found.length} of the ${batch.files} files recovered from ${batch.label || batch.id}`);
+  if (batch.files > found.length) {
+    log.warn(`${batch.files - found.length} files of that recovery were not read: only the newest 1000 of a recovery are`);
+  }
+  for (const file of found) await readFile(file);
+}
+
+async function readFile(file: RecoveredFile): Promise<void> {
+  if (settings.get<boolean>("scan_files") === false) return;
+  if (!file.text || scanned.has(file.id)) return;
+  scanned.add(file.id);
+  const opts = options();
+  if (file.size > opts.maxBody) {
+    log.debug(`${file.path} is larger than the body limit (${Math.round(file.size / 1024)} KiB), so it was not read`);
+    return;
+  }
+  let text: string;
+  try {
+    text = (await files.read(file, opts.maxBody)).text;
+  } catch (e) {
+    log.debug(`couldn't read ${file.path}: ${String(e)}`);
+    return;
+  }
+  const hits = scan({ side: "response", body: text }, opts);
+  for (const hit of hits) {
+    log.debug(`${hit.detector} in ${file.path}: ${redact(hit.value)}`);
+    await findings.record(fileDraft(file, hit));
+  }
+  if (hits.length >= opts.maxHits) {
+    log.info(`${file.path}: stopped at ${opts.maxHits} findings (see the "Most findings from one message" setting)`);
+  }
+}
+
+function fileDraft(file: RecoveredFile, hit: Hit) {
+  const from = file.url ? ` It was recovered from ${file.url}.` : file.host ? ` It was recovered from ${file.host}.` : "";
+  let notes =
+    `${hit.label} in ${file.path}, a file recovered from the work and kept under this engagement.${from} ` +
+    `A secret in a file the application ships is in every copy of it, and is read by anyone who downloads it: ` +
+    `it is not a value that happened to pass by.`;
+  if (hit.key) notes += ` The field was named "${hit.key}".`;
+  if (hit.note) notes += ` ${hit.note}`;
+  return {
+    value: hit.value,
+    types: [hit.type],
+    notes,
+    fields: {
+      detector: hit.detector,
+      where: "recovered file",
+      file: file.path,
+      ...(hit.key ? { field: hit.key } : {}),
+      ...(hit.fields ?? {}),
+    },
+    flowId: file.flowId || undefined,
+    location: file.flowId ? ("response_body" as Location) : undefined,
+    detail: file.path,
+    hidden: hit.secret && settings.get<boolean>("hide_secrets"),
+    files: [file.id],
+  };
 }
 
 async function record(flow: Flow, side: "request" | "response", input: Input, what = ""): Promise<void> {
@@ -87,6 +187,7 @@ function options(): Options {
     maxPii: settings.get<number>("max_pii_kb") * 1024,
     ignoreValues: settings.get<string[]>("ignore_values"),
     hexHashes: settings.get<boolean>("hex_hashes"),
+    headerTokens: settings.get<boolean>("header_session_tokens") === true,
     maxHits: settings.get<number>("max_findings"),
   };
 }

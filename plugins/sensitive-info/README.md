@@ -1,7 +1,7 @@
 # sensitive-info
 
-Reads every targeted request, response and WebSocket message and records
-what shouldn't be travelling in the clear: credentials, keys and tokens,
+Reads every targeted request, response and WebSocket message — and every
+file the work recovered — and records what shouldn't be there: credentials, keys and tokens,
 password hashes, and highly sensitive personal data — payment cards, bank
 and government identifiers, dates of birth. Each hit becomes a finding whose
 value is the thing itself, linked to the request it was seen in; the same
@@ -26,12 +26,35 @@ what you are looking at helps nobody. Turn it off with **Hide secret values**.
 | Part | What is read |
 |---|---|
 | The URL's query string | A credential in a URL is a finding of its own: it reaches server logs, browser history and Referer headers. The notes say so. |
-| Headers | `Authorization` and `Proxy-Authorization` of any scheme (Basic is decoded to the user name and password it hides), cookies, `X-Api-Key` and anything else named like a credential. |
+| Headers | Only what a format proves to be a secret: a provider's key, a password hash, a password or card number in clear, an HTTP Basic credential (decoded to the user name and password it hides). A token or session identifier is **not** — see "Your own session", below. |
 | Bodies | Form, JSON, XML and multipart bodies, up to **Largest body scanned**. |
 | WebSocket messages | Both directions, text messages only. |
+| Recovered files | The files another plugin recovered into the engagement — the application's own source, un-webpacked from an exposed map — read with the same detectors as a body, and the finding links to the file. Turn it off with **Scan the files the work recovers**. |
 
 Replayed traffic and an agent's sends come through the same hooks, so they
 are scanned too. Requests can be turned off with **Scan requests**.
+
+## Your own session
+
+This plugin runs beside somebody driving the application in a browser, not
+beside an attacker reading the wire. Every `Cookie`, `Set-Cookie`,
+`Authorization` and `X-CSRF-Token` that passes therefore carries a
+credential that tester already holds, and reporting each one buries the
+findings that matter under their own session.
+
+So in a **header**, a value is only reported when something other than its
+field name shows it to be a secret: a provider's key format
+(`AKIA…`, `sk_live_…`), a password hash, a password or card number in
+clear, an HTTP Basic credential. A token, a session identifier or a
+key-shaped value under a credential-sounding header name is not. `Bearer`,
+`Digest`, `NTLM` and `Negotiate` credentials are not reported either: the
+first is the session, and the rest change with every nonce.
+
+The same value in a query string, a body or a recovered file is still
+reported in full, because there it is the application putting a secret
+somewhere it does not belong. **Report tokens and session identifiers in
+headers** turns the whole policy off, for reading traffic that isn't your
+own.
 
 ## Detectors
 
@@ -44,8 +67,8 @@ that category.
 
 `field_password`, `field_pin` (one-time and PIN codes), `field_username` (only
 beside a credential, and only in a request), `url_credentials`
-(`postgres://user:pass@host`), and the `auth_header` schemes that carry a
-password: Basic, Digest, NTLM and Negotiate.
+(`postgres://user:pass@host`), and `auth_header` — HTTP Basic, decoded to
+the user name and password it carries.
 
 ### secret-key
 
@@ -63,9 +86,10 @@ password: Basic, Digest, NTLM and Negotiate.
 ### token
 
 `jwt` (the claims are decoded into the finding's details, including
-`jwt.header.alg`, so an `alg: none` token stands out), `auth_header`,
-`auth_header_bare`, `field_token`, `field_session` (session identifiers and
-CSRF tokens).
+`jwt.header.alg`, so an `alg: none` token stands out), `field_token`,
+`field_session` (session identifiers and CSRF tokens). These, with
+`field_api_key`, `field_username` and `hex_hash`, are the detectors a
+header is not read for; see "Your own session".
 
 ### hash
 

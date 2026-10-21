@@ -16,14 +16,16 @@ button that opens it. The plugins here:
 
 | Plugin | What it does |
 |---|---|
-| [`wordpress`](plugins/wordpress) | Recognises WordPress sites from the Entity Explorer and records the core version, plugins, themes, REST namespaces and exposed accounts as findings. Passive by default; an opt-in active scan requests a part's readme.txt/style.css to pin a version the traffic didn't state |
-| [`sensitive-info`](plugins/sensitive-info) | Flags credentials, keys, tokens, password hashes and highly sensitive personal data (payment cards, bank and government identifiers, dates of birth) in requests, responses and WebSocket messages — headers, query strings and bodies — as findings, recording the ones that are secrets in themselves hidden |
+| [`wordpress`](plugins/wordpress) | Recognises WordPress sites from the Entity Explorer and records the core version, plugins, themes, REST namespaces and exposed accounts as findings. Passive by default; an opt-in active scan requests a part's readme.txt/style.css to pin a version the traffic didn't state, once per part per engagement |
+| [`sensitive-info`](plugins/sensitive-info) | Flags credentials, keys, tokens, password hashes and highly sensitive personal data (payment cards, bank and government identifiers, dates of birth) in requests, responses, WebSocket messages and the files the work recovered — headers, query strings, bodies and recovered source — as findings, recording the ones that are secrets in themselves hidden. A token or session identifier in a header is the tester's own session, so it is not reported; a secret a format proves to be one is reported wherever it appears |
 | [`footprint`](plugins/footprint) | Maps an organisation's external footprint from its responses: the contact details it publishes (emails, telephone numbers, postal addresses), the social-media accounts and source-code repositories it links to (judged by whether they sit in the header/footer or carry rel="me", so the org's own accounts are told from third parties' links in the page content), and the cloud buckets, package-registry entries, third-party services and API/documentation endpoints it exposes |
 | [`stack-disclosure`](plugins/stack-disclosure) | Flags what a response's headers give away about the stack — the web server and its version, the language/framework/CMS, the deployed build, internal host names and private addresses, framework session cookies, and debugging aids left on — as findings, once per host, with the setting that turns each off |
 | [`saml-inspector`](plugins/saml-inspector) | Decodes SAML exchanges (including DEFLATE redirect binding) and flags subjects, attributes and assertion weaknesses as findings |
 | [`precon`](plugins/precon) | Pre-engagement reconnaissance from the command line. `reproxy precon dns <domain>` looks a domain up in DNS reconnaissance sources (DNSDumpster); `reproxy precon ssl <domain>` looks it up in the Certificate Transparency logs through both crt.sh and ctlogs.dev, merging the two answers certificate by certificate. What the lookups find — host names, addresses, certificate issuers and validity — goes in the Entity Explorer, with names outside the domain under Targets → Related. Driven by the user, not by traffic; each command sends the domain name to third-party services |
 | [`js-libraries`](plugins/js-libraries) | Recognises the JavaScript libraries the targets serve (from a script's URL or its banner, including scripts a target's page loads from a public CDN) and records each version as a finding; looks each exact version up on osv.dev and raises every known vulnerability as a finding with its osv.dev link, severity and fixed release. Sends package names and versions to osv.dev |
 | [`spa-recon`](plugins/spa-recon) | Recognises single-page apps — Vue/Nuxt, React/Next.js, Svelte/SvelteKit and Angular — and the bundler build behind them; on in-scope hosts it fetches exposed JavaScript source maps and the Vite build manifest to recover the app's source-file structure, its framework and build versions, and the URLs it references. When a map carries the source it un-webpacks it automatically (on by default): the application's source files are written to the engagement's recovered files, the exposed-map finding links to them, and each recovered file is mined for the URLs it calls. Records a finding per SPA, exposed source map, exposed build manifest, framework and bundled-dependency version, and fills the Entity Explorer from the hosts and URLs it finds. The right-click action "Recover source from map" does the same on demand. Sends requests to the target (active) to fetch .map and manifest.json files |
+| [`param-miner`](plugins/param-miner) | Discovers hidden request parameters and unkeyed inputs on one request you right-click: common query/body/cookie names, and the proxy, routing and caching headers that matter behind a CDN or load balancer. Judges each guess by reflection or a change from a baseline, bisects a reacting batch to the name responsible, and confirms every candidate on its own before recording it. A user-initiated action only — never automatic; every probe carries a cache-buster so it never shares a cache key with a real user (active) |
+| [`laravel`](plugins/laravel) | Finds the misconfigurations a Laravel application gives away in its own traffic: debug mode left on (Ignition's and Whoops' pages and the JSON exception reply, with the stack traces, application paths, framework and PHP versions, server environment and APP_KEY they print), development tooling left routed (Telescope, Horizon, Pulse, the Debugbar, Clockwork, Ignition's own routes, log viewers), the files a document root pointed at the project rather than public/ exposes (.env, composer.json, storage logs, vendor), and session cookies missing Secure, HttpOnly or SameSite. Each is a finding with the setting that fixes it. Passive by default; an opt-in check asks each in-scope Laravel host for a short list of paths once per engagement — what was checked is written into the engagement and noted on the origin in the Explorer, so a reload, a restart or a second visit sends nothing more |
 
 ## Layout
 
@@ -549,6 +551,13 @@ if (r.ok) log.info(r.json());
   feed each other forever.
 - Plugins can reach any host. The same-domain rule that binds AI agents
   doesn't apply to code you installed.
+- Send the same request once. Keep what you have already asked for in
+  `storage.engagement` — not only in a variable, which lasts until the next
+  reload — and look there before sending, so a restart or a second visit to
+  the site doesn't repeat the work against somebody's server. Write it down
+  before the request goes out, remember the answers that found nothing as
+  well, and reset your in-memory copy on `plugin.on_load` and
+  `engagement.on_opened`.
 - Responses over 16 MiB are refused. A plugin can have at most 16 requests in
   flight.
 
@@ -642,3 +651,5 @@ Before committing, run every plugin's checks from this repo's root:
 ```
 for d in plugins/*/; do reproxy plugins validate "$d" && reproxy plugins test "$d" || break; done
 ```
+
+~~

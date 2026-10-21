@@ -1,6 +1,6 @@
 {
   "name": "wordpress",
-  "version": "1.2",
+  "version": "1.3",
   "description": "Recognises WordPress sites and records what they give away about themselves — the core version, the plugins and themes installed, the REST namespaces plugins register and the user accounts exposed — as findings. It reads the Entity Explorer, not the traffic, and is passive by default. Turn on active version scanning and it will also request the readme.txt / style.css of a plugin or theme whose version the traffic never stated, the way wpscan pins a version down.",
   "author": {
     "name": "reProxy"
@@ -17,6 +17,10 @@
     {
       "hook": "plugin.on_load",
       "function": "init"
+    },
+    {
+      "hook": "engagement.on_opened",
+      "function": "onEngagement"
     },
     {
       "hook": "url.on_created",
@@ -65,7 +69,7 @@
       "key": "active_version_scan",
       "type": "boolean",
       "label": "Actively request a plugin's or theme's version",
-      "description": "Off: the plugin stays passive and reports only what the traffic carried. On: when a plugin or theme is found whose version the traffic never stated, it requests that part's readme.txt (plugins) or style.css (themes) to read the version, the way wpscan does. These requests go to the site, so this is active testing; they are kept to the hosts your targets cover and shown in the Traffic list.",
+      "description": "Off: the plugin stays passive and reports only what the traffic carried. On: when a plugin or theme is found whose version the traffic never stated, it requests that part's readme.txt (plugins) or style.css (themes) to read the version, the way wpscan does. These requests go to the site, so this is active testing; they are kept to the hosts your targets cover and shown in the Traffic list. Each part is asked for once per engagement and never again — what was asked, and what it answered, is written into the engagement, so a reload, a restart or a second visit sends nothing more.",
       "default": false
     }
   ]
