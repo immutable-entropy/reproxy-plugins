@@ -1,0 +1,136 @@
+{
+  "name": "403-bypasser",
+  "version": "1.0",
+  "description": "Tries the well-known tricks for reaching a 401/403-protected endpoint on one request you right-click, and records each one that works as a finding to report and fix. Techniques: path mutations (the PortSwigger 403-bypasser payloads inserted around the path, plus trailing/double slashes, /..;/, case changes and suffixes), IP/forwarding header injection (X-Forwarded-For: 127.0.0.1 and the like), URL-override headers (X-Original-URL / X-Rewrite-URL carrying the blocked path), method swaps (POST, HEAD, OPTIONS), and an HTTP/1.0 downgrade. A user-initiated action only — never automatic. The chosen URL must come back blocked first; a variant is reported only if it leaves that blocked status, serves content, differs from the block page, and reproduces on a second request. Active and can be noisy; every probe carries a cache-buster so it never shares a cache key with a real user.",
+  "author": {
+    "name": "reProxy"
+  },
+  "status": "disabled",
+  "sdk": "1",
+  "finding_types": [
+    { "id": "bypass", "name": "403 Bypass", "color": "#e53935" }
+  ],
+  "actions": [
+    {
+      "id": "bypass",
+      "label": "403 Bypasser",
+      "description": "Try to reach this blocked request by path mutations, header injection, URL-override headers, method swaps and an HTTP/1.0 downgrade, and record each confirmed bypass as a finding. Sends many requests to this host (active); every probe carries a cache-buster so nothing is cached on others' behalf.",
+      "function": "bypass",
+      "match": { "scope": "any" }
+    }
+  ],
+  "settings": [
+    {
+      "key": "techniques",
+      "type": "list",
+      "label": "Techniques to try",
+      "description": "Which techniques a run uses: path, header, override, method, downgrade. The default is all of them.",
+      "default": ["path", "header", "override", "method", "downgrade"]
+    },
+    {
+      "key": "path_payloads",
+      "type": "list",
+      "label": "Extra path payloads",
+      "description": "Payloads added to the bundled list for the path technique (inserted around the path). The bundled list is PortSwigger 403-bypasser's query payloads.",
+      "default": []
+    },
+    {
+      "key": "inject_headers",
+      "type": "list",
+      "label": "Extra headers to inject",
+      "description": "\"Name: Value\" lines added to the bundled list for the header technique. A line with no value defaults to 127.0.0.1. The bundled list is PortSwigger 403-bypasser's header payloads.",
+      "default": []
+    },
+    {
+      "key": "override_headers",
+      "type": "list",
+      "label": "URL-override headers",
+      "description": "Headers tried with the blocked path as their value against the base path, for the override technique.",
+      "default": ["X-Original-URL", "X-Rewrite-URL", "X-Original-Url", "X-Override-URL", "X-Rewrite-Url"]
+    },
+    {
+      "key": "override_base",
+      "type": "string",
+      "label": "Override base path",
+      "description": "The permitted path the override technique requests while carrying the blocked path in a header.",
+      "default": "/"
+    },
+    {
+      "key": "methods",
+      "type": "list",
+      "label": "Methods to try",
+      "description": "Alternate HTTP methods for the method-swap technique; the request's own method is skipped.",
+      "default": ["POST", "HEAD", "OPTIONS"]
+    },
+    {
+      "key": "downgrade_strip_headers",
+      "type": "boolean",
+      "label": "Strip headers on HTTP/1.0 downgrade",
+      "description": "Send the downgrade with only the request line and Host, as the original extension does. Off by default, so the downgrade keeps your Cookie and Authorization and is tested as the same user.",
+      "default": false
+    },
+    {
+      "key": "blocked_status",
+      "type": "list",
+      "label": "Blocked statuses",
+      "description": "The statuses that count as \"blocked\" for the baseline and that a bypass must leave.",
+      "default": ["401", "403"]
+    },
+    {
+      "key": "include_redirects",
+      "type": "boolean",
+      "label": "Count 3xx redirects as a bypass",
+      "description": "Treat a 3xx response as a possible bypass. Off by default, because adding or removing a trailing slash and redirects to a login page are common false positives; turn it on when a redirect to the resource is what you expect.",
+      "default": false
+    },
+    {
+      "key": "require_block",
+      "type": "boolean",
+      "label": "Require a blocked baseline",
+      "description": "Only run when the chosen request first comes back blocked (401/403). On by default, since there is nothing to bypass otherwise.",
+      "default": true
+    },
+    {
+      "key": "cache_buster",
+      "type": "boolean",
+      "label": "Add a cache-buster to every probe",
+      "description": "Carry a unique query parameter on each probe so an odd request never shares a cache key with a real user, and the answer comes from the origin.",
+      "default": true
+    },
+    {
+      "key": "max_requests",
+      "type": "number",
+      "label": "Most requests to send",
+      "description": "A hard cap on the probes one run sends, across every technique, including the baseline and confirmations. The run stops when it is reached.",
+      "default": 400
+    },
+    {
+      "key": "pace_ms",
+      "type": "number",
+      "label": "Pause between requests (ms)",
+      "description": "A pause before each probe, so a run doesn't burst at the target or its CDN.",
+      "default": 120
+    },
+    {
+      "key": "max_findings",
+      "type": "number",
+      "label": "Most bypasses to report",
+      "description": "The run stops once this many bypasses are confirmed.",
+      "default": 50
+    },
+    {
+      "key": "baseline_samples",
+      "type": "number",
+      "label": "Baseline samples",
+      "description": "How many times the unchanged request is sent first, to learn the blocked response's status and length before a variant is judged against it.",
+      "default": 3
+    },
+    {
+      "key": "max_scan_kb",
+      "type": "number",
+      "label": "Largest response body compared (KiB)",
+      "description": "Only this much of each response body is kept to compare against the block page. The body length, used to spot a changed response, is measured in full.",
+      "default": 512
+    }
+  ]
+}
