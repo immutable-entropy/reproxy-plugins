@@ -1,7 +1,7 @@
 {
   "name": "stack-disclosure",
-  "version": "1.0-1",
-  "description": "Reads response headers for what they give away about the stack: the web server and its version, the language, framework or CMS, the build that is deployed, internal host names and private addresses, framework session cookies, and debugging aids left switched on. Each is recorded as a finding, once per host, with the setting that turns it off. It only reads traffic: nothing is held, changed or sent.",
+  "version": "1.1",
+  "description": "Reads response headers for what they give away about the stack: the web server and its version, the language, framework or CMS, the build that is deployed, internal host names and private addresses, framework session cookies, and debugging aids left switched on. Each is recorded as a finding, once per host, with the setting that turns it off. Reading traffic is passive; nothing is held or changed. When the vulnerability check is turned on (off by default), a banner that names a full version is looked up on the NVD API and CISA's Known Exploited Vulnerabilities catalog, and every known vulnerability becomes a finding graded by its CVSS score — this sends the product name and version (never your targets' addresses) to services.nvd.nist.gov and cisa.gov.",
   "author": {
     "name": "Kayleigh",
     "email": null
@@ -9,7 +9,12 @@
   "status": "disabled",
   "sdk": "1",
   "finding_types": [
-    { "id": "disclosure", "name": "Stack Disclosure", "color": "#546e7a" }
+    { "id": "disclosure", "name": "Stack Disclosure", "color": "#546e7a" },
+    { "id": "vuln-critical", "name": "Vulnerability (Critical)", "color": "#b71c1c" },
+    { "id": "vuln-high", "name": "Vulnerability (High)", "color": "#e53935" },
+    { "id": "vuln-medium", "name": "Vulnerability (Medium)", "color": "#fb8c00" },
+    { "id": "vuln-low", "name": "Vulnerability (Low)", "color": "#fdd835" },
+    { "id": "vuln-kev", "name": "Actively Exploited (CISA KEV)", "color": "#8e24aa" }
   ],
   "targets": [
     { "hook": "plugin.on_load", "function": "load" },
@@ -40,6 +45,54 @@
       "label": "Most findings from one response",
       "description": "A response whose headers trip more detectors than this is stopped at the cap.",
       "default": 25
+    },
+    {
+      "key": "check_vulnerabilities",
+      "type": "boolean",
+      "label": "Look disclosed versions up for known vulnerabilities (active)",
+      "description": "Off (default): nothing is sent. On: when a banner names a full version of a known product, the version is looked up on the NVD API and CISA KEV, and each vulnerability becomes a finding graded by its CVSS score. This sends requests to services.nvd.nist.gov and cisa.gov (the product and version only), recorded in the Traffic list. Answers are kept for a day, so a version is asked about once however often it is seen.",
+      "default": false
+    },
+    {
+      "key": "nvd_api_key",
+      "type": "secret",
+      "label": "NVD API key",
+      "description": "Optional. A free key from nvd.nist.gov raises NVD's rate limit (50 requests per 30 seconds instead of 5), so a run with many versions finishes sooner. Without one the lookups just run slower."
+    },
+    {
+      "key": "use_nvd",
+      "type": "boolean",
+      "label": "Query the NVD API",
+      "description": "Version-precise CVEs with CVSS scores. On by default when the vulnerability check is on.",
+      "default": true
+    },
+    {
+      "key": "use_kev",
+      "type": "boolean",
+      "label": "Use CISA's Known Exploited Vulnerabilities catalog",
+      "description": "Flags which CVEs are being exploited in the wild, and covers appliance products (such as F5 BIG-IP) that NVD can't match by version. On by default when the vulnerability check is on.",
+      "default": true
+    },
+    {
+      "key": "require_full_version",
+      "type": "boolean",
+      "label": "Only look up a full version",
+      "description": "On (default): only a banner that names a complete version (all of major.minor.patch, e.g. 16.1.0 or 2.4.41) is looked up, since a two-part release line like 1.18 can't be matched to a CVE reliably. Off: look up whatever version is named.",
+      "default": true
+    },
+    {
+      "key": "min_cvss",
+      "type": "number",
+      "label": "Lowest CVSS score to report",
+      "description": "A CVE below this base score is not recorded. 0 reports everything; 7 reports only High and Critical. Does not apply to CISA KEV product matches, which carry no score.",
+      "default": 0
+    },
+    {
+      "key": "max_cves_per_banner",
+      "type": "number",
+      "label": "Most CVEs per version",
+      "description": "The most findings to record for one disclosed version, most severe first.",
+      "default": 50
     }
   ]
 }
